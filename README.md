@@ -118,4 +118,4 @@ When you don't feel like typing commands, just tell Claude what you want in plai
 
 > What you can actually do depends on your account's privileges. A regular account usually has permission for everyday ticket / time-entry / comment operations, while admin-level operations (creating projects, managing users) will mostly be denied.
 
-See [`CLAUDE.md`](./CLAUDE.md) for detailed working conventions and extension notes.
+See [`AGENTS.md`](./AGENTS.md) for detailed working conventions and extension notes (read by AI coding agents; `CLAUDE.md` is a symlink to it for Claude Code).
