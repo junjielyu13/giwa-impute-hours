@@ -373,6 +373,12 @@ HTML_PAGE = r'''<!DOCTYPE html>
   .weeknav button { background:#f0f1f3; border:0; border-radius:6px; padding:6px 12px; cursor:pointer; font-size:14px; }
   .weeknav button:hover { background:#e4e6e9; }
   .langsel { margin-left:10px; background:#f0f1f3; border:0; border-radius:6px; padding:6px 8px; cursor:pointer; font-size:13px; color:#333; }
+  #content { position:relative; }
+  #calLoading { display:none; position:absolute; inset:0; background:rgba(255,255,255,.72); z-index:40; flex-direction:column; align-items:center; justify-content:center; gap:14px; }
+  #calLoading.on { display:flex; }
+  #calLoading span { color:#8a9099; font-size:15px; font-weight:600; }
+  .spin { width:42px; height:42px; border:4px solid #e6e8ec; border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
   .cal { display:grid; grid-template-columns:56px repeat(5,1fr); }
   .corner, .dayhead { border-bottom:1px solid var(--line); }
   .dayhead { padding:8px 6px; text-align:center; border-left:1px solid var(--line); }
@@ -452,6 +458,7 @@ HTML_PAGE = r'''<!DOCTYPE html>
     <option value="ca">Català</option>
   </select>
 </header>
+<div id="content">
 <div id="cal" class="cal"></div>
 <div id="bottom">
   <div id="stats" class="bcol">
@@ -464,6 +471,8 @@ HTML_PAGE = r'''<!DOCTYPE html>
   </div>
 </div>
 <div id="result"></div>
+<div id="calLoading"><div class="spin"></div><span data-i18n="loading">Loading…</span></div>
+</div>
 <footer>
   <span class="grand" id="grand"></span>
   <span class="hint" data-i18n="footerHint">Drag on a day's timeline to create a time block (snaps to 15 min). Grey cards are already-logged hours.</span>
@@ -700,15 +709,21 @@ let TARGETS = loadTargets();
 function setTarget(date, val) { const h = parseHM(val); if (h == null || isNaN(h) || h <= 0) delete TARGETS[date]; else TARGETS[date] = h; localStorage.setItem('giwa_targets', JSON.stringify(TARGETS)); recalc(); }
 
 async function load() {
+  const ld = document.getElementById('calLoading');
+  ld.classList.add('on');
   document.getElementById('weekLabel').textContent = T.loading;
-  const r = await fetch('/api/init?week=' + weekOffset);
-  DATA = await r.json();
-  if (DATA.error) { document.getElementById('weekLabel').textContent = T.errPrefix + DATA.error; return; }
-  blocks = [];
-  document.getElementById('result').innerHTML = '';
-  render();
-  renderGitlab();
-  renderStats();
+  try {
+    const r = await fetch('/api/init?week=' + weekOffset);
+    DATA = await r.json();
+    if (DATA.error) { document.getElementById('weekLabel').textContent = T.errPrefix + DATA.error; return; }
+    blocks = [];
+    document.getElementById('result').innerHTML = '';
+    render();
+    renderGitlab();
+    renderStats();
+  } finally {
+    ld.classList.remove('on');
+  }
 }
 function changeWeek(d, reset) { weekOffset = reset ? 0 : weekOffset + d; load(); }
 
