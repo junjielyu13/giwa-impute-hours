@@ -1,0 +1,11 @@
+# 密钥与本地配置（含 API key / token，绝不提交）
+.env
+.claude/settings.local.json
+.claude/
+
+# 个人导出数据
+MINE.md
+
+# Python
+__pycache__/
+*.pyc
