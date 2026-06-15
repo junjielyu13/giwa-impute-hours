@@ -1,119 +1,121 @@
-# GIWA — Redmine 工单 / 工时小工具
+# GIWA — Redmine Ticket / Time-Tracking Tool
 
-通过 **Redmine REST API** 查询、分析、操作一个 Redmine 项目管理平台（这里代号叫 **GIWA**）的工单、工时、项目数据。
-重点功能是 **网页日历拖块记工时**，解决每周逐个任务手动填工时的痛点。
+Query, analyze, and operate on the tickets, time entries, and project data of a Redmine project management platform (codenamed **GIWA** here) through the **Redmine REST API**.
+The headline feature is **logging time by dragging blocks on a web calendar**, which solves the pain of manually filling in time entries task by task every week.
 
-包含两部分：
-1. **`./giwa` CLI 工具** —— 一键查询常用信息（零依赖，仅用 Python 3 标准库）
-2. **自然语言工作流** —— 直接用大白话让 Claude（或任意能调 API 的助手）帮你干活
+It has two parts:
+1. **The `./giwa` CLI tool** — one-command queries for common info (zero dependencies, Python 3 standard library only)
+2. **A natural-language workflow** — just ask Claude (or any assistant that can call APIs) to do the work for you in plain language
 
-> 这是为某个 Redmine 实例做的个人小工具，把你自己的 Redmine 地址和 API key 填进 `.env` 即可用于任何 Redmine 站点。
+> This is a personal tool built for a specific Redmine instance. Just put your own Redmine URL and API key into `.env` and it works with any Redmine site.
 
 ---
 
-## 前置要求
+## Prerequisites
 
-- **Python 3**（仅用标准库，无需 `pip install`）
-- 一个 **Redmine** 站点 + 你的账号 **API key**
-- 可选：浏览器（用 `timesheet` 网页记工时时）、VS Code（`mine` 会自动用它打开导出文件）
+- **Python 3** (standard library only, no `pip install` needed)
+- A **Redmine** site + your account's **API key**
+- Optional: a browser (for logging time via the `timesheet` web page), VS Code (`mine` will open the exported file with it automatically)
 
-## 安装与配置
+## Install & Configure
 
 ```bash
 git clone git@github.com:junjielyu13/giwa-impute-hours.git
 cd giwa-impute-hours
-cp .env.example .env          # 然后编辑 .env 填入你的配置
-chmod +x giwa giwa.py         # 确保可执行
+cp .env.example .env          # then edit .env and fill in your config
+chmod +x giwa giwa.py         # make sure they're executable
 ```
 
-`.env` 内容：
+`.env` contents:
 
 ```
-GIWA_URL=https://你的-redmine-地址
-GIWA_KEY=你的_api_key
+GIWA_URL=https://your-redmine-host
+GIWA_KEY=your_api_key
 ```
 
-API key 在 Redmine → **My account / 我的账号** → **API access key** → **Show** 获取。
+Get the API key from Redmine → **My account** → **API access key** → **Show**.
 
-> ⚠️ `.env` 已加入 `.gitignore`，不会被提交。API key 等同账号权限，请勿外泄、勿写进任何会进 git 的文件。
+> ⚠️ `.env` is already in `.gitignore` and won't be committed. An API key carries the same privileges as your account, so never leak it or write it into any file that goes into git.
 
 ---
 
-## 1. CLI 工具
+## 1. CLI Tool
 
 ```bash
-./giwa overview              # 全局工单总览
-./giwa mine                  # 我名下未关闭的工单 → 导出 MINE.md（带可点击链接）
-./giwa timesheet             # 打开本地网页·日历周视图，拖块记工时并提交
-./giwa --help                # 查看帮助
+./giwa overview              # global ticket overview
+./giwa mine                  # your open tickets → export to MINE.md (with clickable links)
+./giwa timesheet             # open a local web page (calendar week view), drag blocks to log time and submit
+./giwa --help                # show help
 ```
 
-### overview 输出
-- 工单总数 + 开 / 关统计
-- 按项目分布
-- 按状态分布
-- 按负责人 Top 15
+### overview output
+- Total ticket count + open / closed stats
+- Distribution by project
+- Distribution by status
+- Top 15 by assignee
 
-### mine 输出
-生成 `MINE.md`：分「🔧 待处理」「✅ 已解决待关闭」两组，按项目归类，
-每个工单号是 Markdown 链接（如 `[#1234](https://你的-redmine-地址/issues/1234)`），
-用支持 Markdown 预览的编辑器打开即可点击跳转到对应工单。
+### mine output
+Generates `MINE.md`: split into two groups, "🔧 To do" and "✅ Resolved, pending closure", grouped by project,
+where each ticket number is a Markdown link (e.g. `[#1234](https://your-redmine-host/issues/1234)`).
+Open it in an editor that supports Markdown preview and click through to the corresponding ticket.
 
-### timesheet 记工时（解决每周一逐个任务记工时的痛点）
-`./giwa timesheet` 启动一个本地网页·**日历周视图**，自动打开浏览器（实现见 `timesheet_web.py`）：
+### timesheet — log time (solves the Monday pain of logging time task by task)
+`./giwa timesheet` starts a local web page (**calendar week view**) and opens your browser automatically (implementation in `timesheet_web.py`):
 
-- 列 = 周一~周五，纵轴 = 时间（7:00–22:00）。用 ◀/▶ 切换上周/下周。
-- **在某天时间轴上按住拖动** = 新建一个时间块（自动按 15 分钟吸附），松手后选任务、填可选备注。
-- 块的**时长**换算成工时。GIWA 只存「日期+小时数」不存几点，所以时间轴只用于直观排布。
-- 每列顶部灰色卡片 = GIWA 里**已记录**的工时（自动读取，不可改、**不会重复提交**）。
-- 底部显示每天/本周合计。点 **提交到 GIWA** → 浏览器二次确认 → 写入；成功的块转为灰色已记录卡片。
-- 活动默认 **Others**；备注留空会自动用「类型 #编号: 标题」。
-- **每日目标工时**（可选）：每列表头可填当天应上班时长（如 `8:30`），合计会显示成
-  「已填 / 目标」并按达标情况变背景色（达标=绿、欠=橙、超=红），只提醒不强制。
-  支持 `8:30` / `8.30` / `830` 写法。目标按**具体日期**记在浏览器本地，**每周独立、互不共享**。
-- **关掉标签页自动停服务**：页面每 3 秒心跳一次，关闭页面即通知服务退出；
-  即使浏览器异常退出，服务端 8 秒心跳超时也会兜底自动停。也可在终端按 Ctrl+C。
-- **选择任务列表**：按项目 `<optgroup>` 分组、选项带类型 `[Task]/[Epic]/[Incidencia]/...`；
-  顶部有两个快捷分组 **🦊 gitlab**（本周 PR/分支关联的 GIWA 任务）和 **🕒 最近7天**（你处理过的，含已关闭）。
-- **本周 GitLab 活动**（右下角浮动面板，需配置 `GITLAB_URL`/`GITLAB_TOKEN`，只读）：
-  按天列出在哪个 repo 推了哪个分支（commit 数）、开/合了哪些 MR；分支名里的 `GIWA<编号>` 自动链到工单。
-- 端口默认 8765，被占用可 `./giwa timesheet --port 8790`。
+- Columns = Monday–Friday, vertical axis = time (7:00–22:00). Use ◀/▶ to switch to the previous/next week.
+- **Press and drag on a day's timeline** = create a time block (snaps to 15-minute increments); on release, pick a task and fill in an optional comment.
+- The block's **duration** is converted into logged hours. GIWA only stores "date + number of hours", not the time of day, so the timeline is only used for an intuitive layout.
+- The gray card at the top of each column = time **already logged** in GIWA (read automatically, not editable, **never resubmitted**).
+- The bottom shows daily / weekly totals. Click **Submit to GIWA** → browser confirms again → writes; successful blocks turn into gray "already logged" cards.
+- Activity defaults to **Others**; an empty comment automatically uses "type #number: subject".
+- **Daily target hours** (optional): each column header lets you fill in the day's expected working time (e.g. `8:30`), and the total is shown as
+  "logged / target" with a background color reflecting whether the target is met (met = green, under = orange, over = red) — a reminder only, not enforced.
+  Supports `8:30` / `8.30` / `830` formats. Targets are stored per **specific date** in the browser's local storage, **independent for each week and not shared**.
+- **Closing the tab automatically stops the server**: the page sends a heartbeat every 3 seconds and notifies the server to exit when closed;
+  even if the browser crashes, a server-side 8-second heartbeat timeout will stop it as a fallback. You can also press Ctrl+C in the terminal.
+- **Task selection list**: grouped by project via `<optgroup>`, with options tagged by type `[Task]/[Epic]/[Incidencia]/...`;
+  at the top are two shortcut groups, **🦊 gitlab** (GIWA tasks linked to this week's PRs/branches) and **🕒 Last 7 days** (ones you've worked on, including closed).
+- **This week's GitLab activity** (floating panel in the bottom-right corner, requires `GITLAB_URL`/`GITLAB_TOKEN`, read-only):
+  lists by day which branch was pushed to which repo (commit count) and which MRs were opened/merged; a `GIWA<number>` in a branch name auto-links to the ticket.
+- The default port is 8765; if it's in use, run `./giwa timesheet --port 8790`.
 
-### 扩展
-`giwa.py` 采用子命令结构，在 `COMMANDS` 字典里加一个函数即可新增命令
-（规划中：`mine`、`show #ID`、`project NAME`、`due`、`urgent`）。
+> 🌐 The web page is multi-language: it **auto-detects your browser language** and defaults to English, with a language switcher button for **EN / 中文 / ES / CA** (English, Chinese, Spanish, Catalan).
+
+### Extending
+`giwa.py` uses a subcommand structure; add a new command simply by adding a function to the `COMMANDS` dict
+(planned: `mine`, `show #ID`, `project NAME`, `due`, `urgent`).
 
 ---
 
-## 2. 自然语言工作流
+## 2. Natural-Language Workflow
 
-不想敲命令时，直接用大白话告诉 Claude 想干嘛，它会调 Redmine API 完成。例如：
+When you don't feel like typing commands, just tell Claude what you want in plain language and it'll call the Redmine API to get it done. For example:
 
-| 你说 | Claude 做 |
+| You say | Claude does |
 |---|---|
-| 「#1234 现在啥情况，谁评论了」 | 拉详情 + 评论历史并总结 |
-| 「某某项目还有几个没做完」 | 筛选未关闭工单并列出 |
-| 「我这周记了多少工时」 | 查工时记录并汇总 |
-| 「我手头哪些快到期了」 | 按截止日期排序筛选 |
-| 「把 #1234 改成进行中」 | 更新工单（**写操作，先确认**）|
-| 「帮我建 5 个工单：……」 | 批量创建（**写操作，先确认**）|
+| "What's the status of #1234, who commented?" | Pulls the details + comment history and summarizes |
+| "How many tickets are left unfinished in project X?" | Filters open tickets and lists them |
+| "How many hours did I log this week?" | Queries time entries and totals them |
+| "Which of mine are due soon?" | Filters sorted by due date |
+| "Set #1234 to In Progress" | Updates the ticket (**write operation, confirm first**) |
+| "Create 5 tickets for me: …" | Bulk-creates (**write operation, confirm first**) |
 
-### 读 / 写 规矩
-- 📖 **读操作**（查询、统计、导出、分析）→ 直接做
-- ✍️ **写操作**（改状态、加评论、建/删工单、改工时）→ Claude 会先说明「要改什么」，**你确认后**才执行
+### Read / Write rules
+- 📖 **Read operations** (query, stats, export, analysis) → done directly
+- ✍️ **Write operations** (change status, add comments, create/delete tickets, edit time entries) → Claude will first explain "what it's about to change" and only execute **after you confirm**
 
 ---
 
-## Redmine API 能做什么（速查）
+## What the Redmine API Can Do (quick reference)
 
-- **Issues 工单**：增删改查，丰富筛选（状态/项目/负责人/时间/自定义字段），`include` 评论历史、附件、关联、子工单
-- **Time Entries 工时**：增删改查
-- **Projects / Versions / Categories / Wiki / Memberships / Groups**：增删改查（部分需管理员权限）
-- **Attachments 附件**：上传 / 下载 / 删除
-- **Search 全文搜索**、**News 新闻**、**Issue Relations 关联**
-- **枚举类**（状态、tracker、优先级、角色）：只读
-- **插件**（Agile、Checklists 等）：有各自独立 API，需单独验证
+- **Issues**: full CRUD, rich filtering (status / project / assignee / time / custom fields), `include` comment history, attachments, relations, sub-issues
+- **Time Entries**: full CRUD
+- **Projects / Versions / Categories / Wiki / Memberships / Groups**: full CRUD (some require admin privileges)
+- **Attachments**: upload / download / delete
+- **Search** (full-text), **News**, **Issue Relations**
+- **Enumerations** (statuses, trackers, priorities, roles): read-only
+- **Plugins** (Agile, Checklists, etc.): each has its own separate API, to be verified individually
 
-> 实际能做什么取决于你的账号权限。普通账号通常日常工单/工时/评论操作均有权限，管理员级操作（建项目、管用户）多半会被拒。
+> What you can actually do depends on your account's privileges. A regular account usually has permission for everyday ticket / time-entry / comment operations, while admin-level operations (creating projects, managing users) will mostly be denied.
 
-详细的工作约定与扩展说明见 [`CLAUDE.md`](./CLAUDE.md)。
+See [`CLAUDE.md`](./CLAUDE.md) for detailed working conventions and extension notes.

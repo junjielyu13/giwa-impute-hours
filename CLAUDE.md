@@ -1,87 +1,88 @@
-# CLAUDE.md — GIWA 工作区说明
+# CLAUDE.md — GIWA Workspace Guide
 
-这个文件给 Claude 读。说明这个工作区是什么、怎么帮用户干活、有哪些规矩。
+This file is for Claude to read. It explains what this workspace is, how to help the user get work done, and what the rules are.
 
-## 这是什么
+## What this is
 
-**GIWA** 是一个基于 **Redmine** 搭建的项目管理平台（可能装了 Agile、Drive 等 RedmineUP 插件）。
-实际地址放在 `.env` 的 `GIWA_URL`，不写死在代码或文档里。
+**GIWA** is a project-management platform built on **Redmine** (it may have RedmineUP plugins such as Agile, Drive, etc. installed).
+The actual address lives in `GIWA_URL` in `.env`; it is not hard-coded in the code or docs.
 
-本工作区的目的：通过 **Redmine REST API**，让用户用自然语言就能查询、分析、操作 GIWA 的工单/工时/项目等数据。
+The purpose of this workspace: via the **Redmine REST API**, let the user query, analyze, and operate on GIWA's data (issues / time entries / projects, etc.) using natural language.
 
-## 用户
+## User
 
-- **当前用户**：从 `/users/current.json` 取（user id、登录名等以 API 返回为准）
-- **权限**：通常为普通用户（`admin: false`）—— 用户管理、建项目等管理员操作多半会被拒；工单、工时、评论等日常操作有权限
-- **语言**：用中文交流
+- **Current user**: taken from `/users/current.json` (user id, login, etc. as returned by the API)
+- **Permissions**: usually a regular user (`admin: false`) — admin operations such as user management and creating projects will mostly be rejected; day-to-day operations on issues, time entries, comments, etc. are permitted
+- **Language**: communicate in English
 
-## 配置
+## Configuration
 
-凭据存在项目根目录的 `.env`（已被 `.gitignore` 忽略，不进 git）：
+Credentials are stored in `.env` in the project root (already ignored by `.gitignore`, not committed to git):
 
 ```
-GIWA_URL=https://<你的-redmine-地址>
+GIWA_URL=https://<your-redmine-host>
 GIWA_KEY=<API key>
 ```
 
-API key 等同账号权限。**不要把 key 写进任何会进 git 的文件，也不要打印到对话里。** 调用时从 `.env` / 环境变量读。
+The API key is equivalent to account permissions. **Do not write the key into any file that will be committed to git, and do not print it into the conversation.** Read it from `.env` / environment variables when making calls.
 
-## 工作方式
+## How to work
 
-用户用大白话提需求，Claude 直接调 Redmine API 完成。两种模式：
+The user states needs in plain language, and Claude calls the Redmine API directly to fulfill them. Two modes:
 
-1. **临时查询** —— 当场调 API 回答，不一定落进工具
-2. **常用功能** —— 加进 `./giwa` CLI 工具（见下），以后一键跑
+1. **Ad-hoc query** — call the API on the spot to answer; doesn't necessarily get baked into a tool
+2. **Common feature** — add it to the `./giwa` CLI tool (see below) so it can be run with a single command later
 
-### ⚠️ 读 / 写 规矩（重要）
+### ⚠️ Read / Write rules (important)
 
-- 📖 **读操作**（查询、统计、导出、分析）→ 直接做
-- ✍️ **写操作**（改状态/负责人/优先级、加评论、建/删工单、改工时、上传附件）
-  → **先明确告诉用户「要改什么」，得到确认后才执行。** 这是用户的真实生产数据，绝不擅自修改。
+- 📖 **Read operations** (query, statistics, export, analysis) → do them directly
+- ✍️ **Write operations** (changing status / assignee / priority, adding comments, creating/deleting issues, editing time entries, uploading attachments)
+  → **First clearly tell the user "what is going to change", and only execute after getting confirmation.** This is the user's real production data; never modify it without authorization.
 
-## CLI 工具
+## CLI tool
 
-`giwa.py`（Python 3 标准库，零依赖）+ `giwa` 包装脚本。子命令结构，在 `giwa.py` 的 `COMMANDS` 字典加函数即可扩展。
+`giwa.py` (Python 3 standard library, zero dependencies) + the `giwa` wrapper script. Subcommand structure; extend it by adding a function to the `COMMANDS` dict in `giwa.py`.
 
 ```bash
-./giwa overview      # 全局工单总览（开/关、按项目、按状态、按负责人）
+./giwa overview      # Global issue overview (open/closed, by project, by status, by assignee)
 ./giwa --help
 ```
 
-已实现：
-- `overview` — 全局工单总览
-- `mine` — 我名下未关闭工单，导出带链接的 `MINE.md`，自动用 VS Code 打开
-- `timesheet [--port N]` — 启动本地网页·**日历周视图**记工时（实现在 `timesheet_web.py`）。
-  列=周一~周五、纵轴=时间；拖块新建工时、松手选任务，块时长换算成小时。
-  顶部灰色卡片=已记录工时（读 `/time_entries.json` `from`/`to`，不可改、防重复提交）。
-  提交走 POST `/time_entries.json`，活动固定 `activity_id=17` Others，备注留空自动用「tracker #id: subject」。
-  注意：Redmine 工时只存日期+小时，不存时间点，时间轴仅作直观排布。
-  每日可选「目标工时」：表头可填，合计显示「已填/目标」并按达标变背景色（绿/橙/红），仅提醒不强制；
-  目标按具体日期存浏览器 localStorage（key=日期），每周独立不共享。
-  页面有心跳（GET `/api/ping` 每 3s）+ 关闭信标（POST `/api/close`）；关掉标签页自动停服务，
-  服务端 8s 心跳超时兜底退出。
-  任务选择列表：除「分配给我的开放工单」外，还跨项目自动发现「内部/客户会议」Epic
-  （`/issues.json?subject=~Tareas` 再正则筛 `tareas (internas|externas)`），改成友好标题
-  「内部会议/客户会议」排在最前；另支持 `.env` 的 `GIWA_EXTRA_TASKS=id,id` 手动追加常驻任务。
-  下拉与时间块：分组标题用完整项目名（区分名字相近的项目），时间块用项目代号 `split(" - ")[0]`。
-  下拉按项目 `<optgroup>` 分组（项目按任务数排序），选项含 tracker 类型 `[Task]/[Epic]/...`。
-  选择列表顶部还有两个特殊分组：`🦊 gitlab`（本周 PR/分支关联的 GIWA 任务）、`🕒 最近7天`
-  （`assigned_to_id=me&status_id=*&updated_on>=7天前`，含已关闭，便于补工时）。
+Already implemented:
+- `overview` — global issue overview
+- `mine` — open issues assigned to me; exports a linked `MINE.md` and opens it automatically in VS Code
+- `timesheet [--port N]` — start a local web page · **calendar week view** for logging time (implemented in `timesheet_web.py`).
+  Columns = Monday–Friday, vertical axis = time; drag a block to create a time entry, release to pick a task, the block's duration converts to hours.
+  Gray cards at the top = already-recorded time entries (read from `/time_entries.json` `from`/`to`, not editable, prevents duplicate submission).
+  Submission goes through POST `/time_entries.json`, the activity is fixed at `activity_id=17` Others, and an empty comment auto-fills with "tracker #id: subject".
+  Note: Redmine time entries only store date + hours, not a point in time; the time axis is just for intuitive layout.
+  Optional daily "target hours": fillable in the header; the total shows "logged/target" and changes background color by attainment (green/orange/red) — a reminder only, not enforced;
+  targets are stored per specific date in browser localStorage (key = date), independent per week and not shared.
+  The page has a heartbeat (GET `/api/ping` every 3s) + a close beacon (POST `/api/close`); closing the tab automatically stops the service,
+  with an 8s server-side heartbeat timeout as a fallback to exit.
+  The web UI supports 4 languages (English default, Chinese, Spanish, Catalan), with browser auto-detection and a toggle button.
+  Task selection list: besides "open issues assigned to me", it also auto-discovers "internal/client meeting" Epics across projects
+  (`/issues.json?subject=~Tareas`, then regex-filtered by `tareas (internas|externas)`), renamed to friendly titles
+  "Internal Meeting / Client Meeting" pinned at the top; it also supports `GIWA_EXTRA_TASKS=id,id` in `.env` to manually add persistent tasks.
+  Dropdown and time blocks: group headers use the full project name (to distinguish similarly named projects), time blocks use the project code `split(" - ")[0]`.
+  The dropdown groups by project via `<optgroup>` (projects sorted by task count), and options include the tracker type `[Task]/[Epic]/...`.
+  At the top of the selection list there are also two special groups: `🦊 gitlab` (GIWA tasks linked to this week's PRs/branches) and `🕒 last 7 days`
+  (`assigned_to_id=me&status_id=*&updated_on>=7 days ago`, including closed ones, for catching up on time entries).
 
-GitLab 集成（只读，`giwa.py` 的 `gitlab_cfg`/`gitlab_get`，配置在 `.env` 的 `GITLAB_URL`/`GITLAB_TOKEN`）：
-  工时日历右下角浮动面板「📦 本周 GitLab 活动」按天列出 push（repo/分支/commit 数）与 MR；
-  分支/MR 标题里的 `GIWA<编号>` 自动识别并链到 GIWA 工单，也用于生成上面的 gitlab 任务分组。
-  实现：`timesheet_web.serve` 的 `gitlab_activity()` 调 `/api/v4/events?after=&before=`（按周），
-  `/api/v4/projects/:id` 取 repo 名（带缓存）。token 建议只勾 read_api+read_user。严禁写操作。
+GitLab integration (read-only, `gitlab_cfg`/`gitlab_get` in `giwa.py`, configured via `GITLAB_URL`/`GITLAB_TOKEN` in `.env`):
+  the floating panel "📦 This week's GitLab activity" at the bottom-right of the time calendar lists pushes (repo/branch/commit count) and MRs by day;
+  `GIWA<number>` in branch/MR titles is auto-detected and linked to the GIWA issue, and is also used to generate the gitlab task group above.
+  Implementation: `gitlab_activity()` in `timesheet_web.serve` calls `/api/v4/events?after=&before=` (by week),
+  and `/api/v4/projects/:id` to get the repo name (with caching). The token should ideally only have read_api+read_user. Write operations are strictly forbidden.
 
-规划中：`show #ID`（工单详情+评论）、`project NAME`、`due`（按截止排序）、`urgent`。
+Planned: `show #ID` (issue details + comments), `project NAME`, `due` (sorted by due date), `urgent`.
 
-## Redmine API 速查
+## Redmine API quick reference
 
-- **认证**：`X-Redmine-API-Key: <key>` 头，或 `?key=<key>`
-- **格式**：`.json` / `.xml`
-- **分页**：`limit`（最大 100）+ `offset`，大数据要循环
-- **工单筛选**：`status_id`（`open`/`closed`/`*`）、`project_id`、`assigned_to_id`、`author_id`、`tracker_id`、`priority_id`、`cf_x`、`created_on`/`updated_on`（支持 `><`、范围）、`sort`
-- **工单关联数据**：`?include=journals,attachments,relations,children,watchers`
-- **主要资源**：issues、time_entries、projects、users、memberships、versions、wiki、attachments、issue_relations、issue_categories、groups、search、news、枚举类（statuses/trackers/priorities/roles，只读）
-- **插件**：Agile、Checklists 等 RedmineUP 插件有各自独立 API（核心 API 之外），需要时单独验证
+- **Authentication**: `X-Redmine-API-Key: <key>` header, or `?key=<key>`
+- **Format**: `.json` / `.xml`
+- **Pagination**: `limit` (max 100) + `offset`; loop for large datasets
+- **Issue filters**: `status_id` (`open`/`closed`/`*`), `project_id`, `assigned_to_id`, `author_id`, `tracker_id`, `priority_id`, `cf_x`, `created_on`/`updated_on` (supports `><` and ranges), `sort`
+- **Issue associated data**: `?include=journals,attachments,relations,children,watchers`
+- **Main resources**: issues, time_entries, projects, users, memberships, versions, wiki, attachments, issue_relations, issue_categories, groups, search, news, enumerations (statuses/trackers/priorities/roles, read-only)
+- **Plugins**: RedmineUP plugins such as Agile, Checklists, etc. have their own separate APIs (outside the core API); verify separately when needed

@@ -1,10 +1,12 @@
-"""GIWA 工时表 —— 本地网页·日历周视图。
+"""GIWA timesheet — a local web app with a weekly calendar view.
 
-像日历一样：列=周一~周五，纵轴=时间。在某天的时间轴上拖出一个块 = 在某任务上花的时间，
-块的时长换算成工时。GIWA 只存「日期+小时数」不存几点，故时间轴仅作直观排布之用；
-已记录的工时以每列顶部的灰色卡片显示（不可改、不会重复提交）。
+Like a calendar: columns = Mon–Fri, vertical axis = time. Drag a block on a day's
+timeline = time spent on a task; the block duration is converted to logged hours.
+Redmine only stores "date + hours" (no clock time), so the timeline is just for
+intuitive layout. Already-logged hours show as grey cards atop each column
+(read-only, never submitted twice).
 
-被 giwa.py 的 `timesheet` 命令调用，依赖注入 api_get / api_post。
+Invoked by giwa.py's `timesheet` command, with api_get / api_post injected.
 """
 
 import datetime
@@ -16,12 +18,12 @@ import time
 import urllib.parse
 import webbrowser
 
-ACTIVITY_OTHERS = 17  # 用户惯用的工时活动类型 (Others)
-WEEKDAY_CN = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+ACTIVITY_OTHERS = 17  # the time-entry activity type the user normally uses (Others)
 
 
 def _proj_code(name):
-    """项目代号：取「 - 描述」前的部分。如「ABC-12345 - 某模块…」→ ABC-12345；无「 - 」则原样保留。"""
+    """Project code: the part before " - description". e.g. "ABC-12345 - Some module…"
+    -> ABC-12345; if there is no " - ", keep the name as-is."""
     return name.split(" - ")[0].strip()
 
 
@@ -37,7 +39,8 @@ def serve(url, key, api_get, api_post, port=8765, extra_ids=None,
     proj_cache = {}
 
     def gitlab_activity(week_offset):
-        """本周 GitLab 活动（按天）+ 从分支/MR 提取的 GIWA 工单号集合。只读。"""
+        """This week's GitLab activity (by day) + the set of GIWA issue numbers
+        extracted from branches/MRs. Read-only."""
         days = _week_dates(week_offset)
         if not (gitlab_token and gitlab_get):
             return {"enabled": False, "days": [d.isoformat() for d in days], "byday": {}}, set()
@@ -108,7 +111,8 @@ def serve(url, key, api_get, api_post, port=8765, extra_ids=None,
             "status": i["status"]["name"],
         } for i in issues]
 
-        # 跨项目自动发现「内部/客户会议」Epic（subject 含 Tareas internas/externas），改成友好标题
+        # Auto-discover "internal/client meeting" Epics across projects (subject contains
+        # Tareas internas/externas), and rename them to friendly titles.
         meeting = []
         try:
             md = api_get(url, key, "/issues.json?subject=~Tareas&status_id=*&limit=100")
@@ -117,13 +121,13 @@ def serve(url, key, api_get, api_post, port=8765, extra_ids=None,
                 if not m:
                     continue
                 proj = i["project"]["name"]
-                kind = "Tarea internal" if m.group(1) == "internas" else "Tarea external"
+                kind = "Internal meeting" if m.group(1) == "internas" else "Client meeting"
                 meeting.append({"id": i["id"], "subject": i["subject"], "project": proj, "projcode": _proj_code(proj),
                                 "tracker": i["tracker"]["name"], "status": i["status"]["name"], "label": kind})
         except Exception:
             pass
 
-        # 手动常驻任务（.env GIWA_EXTRA_TASKS）
+        # Manual persistent tasks (.env GIWA_EXTRA_TASKS)
         manual, have = [], {t["id"] for t in all_tasks} | {t["id"] for t in meeting}
         for tid in extra_ids:
             if tid in have:
@@ -137,7 +141,7 @@ def serve(url, key, api_get, api_post, port=8765, extra_ids=None,
             except Exception:
                 pass
 
-        # 会议/常驻任务排最前，去重
+        # Meetings/persistent tasks first, deduplicated
         seen, merged = set(), []
         for t in meeting + manual + all_tasks:
             if t["id"] in seen:
@@ -147,7 +151,7 @@ def serve(url, key, api_get, api_post, port=8765, extra_ids=None,
         all_tasks = merged
         subj_of = {t["id"]: t["subject"] for t in all_tasks}
 
-        # 最近 7 天我处理/编辑过的工单（任何状态），放选择列表最上方
+        # Issues I touched/edited in the last 7 days (any status), shown at the top of the list
         recent = []
         try:
             since = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
@@ -180,7 +184,7 @@ def serve(url, key, api_get, api_post, port=8765, extra_ids=None,
         except Exception:
             pass
 
-        # GitLab：本周活动 + 从 PR/分支提取的 GIWA 工单（做成选择列表的 gitlab 分组）
+        # GitLab: this week's activity + GIWA issues extracted from PRs/branches (the gitlab group in the task list)
         gl_panel, gl_ids = gitlab_activity(week_offset)
         known_all = {t["id"]: t for t in all_tasks}
         recent_map = {t["id"]: t for t in recent}
@@ -197,7 +201,7 @@ def serve(url, key, api_get, api_post, port=8765, extra_ids=None,
                     continue
             gitlab_tasks.append(t)
 
-        # 给已记录工时补项目代号（左侧统计按项目分组用）
+        # Attach project codes to already-logged entries (used by the left-side per-project stats)
         pcode = {t["id"]: t["projcode"] for t in (all_tasks + recent + gitlab_tasks)}
         ecache = {}
         for e in existing:
@@ -212,8 +216,11 @@ def serve(url, key, api_get, api_post, port=8765, extra_ids=None,
         return {
             "base": url,
             "week_offset": week_offset,
-            "week_label": f"{days[0]} ~ {days[4]}（第 {days[0].isocalendar()[1]} 周）",
-            "days": [{"date": d.isoformat(), "label": WEEKDAY_CN[d.weekday()]} for d in days],
+            # Structured week info; the client formats the localized label itself.
+            "week_start": days[0].isoformat(),
+            "week_end": days[4].isoformat(),
+            "week_num": days[0].isocalendar()[1],
+            "days": [{"date": d.isoformat()} for d in days],
             "all_tasks": all_tasks,
             "recent": recent,
             "gitlab_tasks": gitlab_tasks,
@@ -296,9 +303,10 @@ def serve(url, key, api_get, api_post, port=8765, extra_ids=None,
     try:
         srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
     except OSError:
-        raise RuntimeError(f"端口 {port} 被占用，换一个： ./giwa timesheet --port 8790")
+        raise RuntimeError(f"Port {port} is in use, try another one: ./giwa timesheet --port 8790")
 
-    # 心跳看门狗：页面每 3 秒 ping 一次，关掉标签页后 8 秒内收不到心跳即自动停服务。
+    # Heartbeat watchdog: the page pings every 3s; if no heartbeat arrives within 8s
+    # of the tab closing, the server stops automatically.
     state = {"last": None}
     HEARTBEAT_TIMEOUT = 8.0
 
@@ -310,24 +318,24 @@ def serve(url, key, api_get, api_post, port=8765, extra_ids=None,
                 return
 
     u = f"http://127.0.0.1:{port}/"
-    print(f"🗓️  工时日历已启动： {u}")
-    print("   在某天时间轴上拖出时间块 → 选任务 → 点「提交到 GIWA」。")
-    print("   关闭浏览器标签页即自动停止服务（也可在此按 Ctrl+C）。")
+    print(f"🗓️  Time calendar started: {u}")
+    print("   Drag a time block on a day's timeline → pick a task → click \"Submit to GIWA\".")
+    print("   Closing the browser tab stops the service automatically (or press Ctrl+C here).")
     threading.Thread(target=watchdog, daemon=True).start()
     webbrowser.open(u)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         srv.shutdown()
-    print("\n已关闭工时日历服务（页面已关闭或手动停止）。")
+    print("\nTime calendar service stopped (page closed or stopped manually).")
 
 
 HTML_PAGE = r'''<!DOCTYPE html>
-<html lang="zh">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>GIWA 工时日历</title>
+<title>GIWA Time Calendar</title>
 <style>
   :root { --line:#e6e8ec; --accent:#e8482b; --ok:#1a8a3a; --new:#e8482b; --locked:#9aa0a8; }
   * { box-sizing: border-box; }
@@ -338,6 +346,7 @@ HTML_PAGE = r'''<!DOCTYPE html>
   .weeknav { margin-left:auto; display:flex; align-items:center; gap:8px; }
   .weeknav button { background:#f0f1f3; border:0; border-radius:6px; padding:6px 12px; cursor:pointer; font-size:14px; }
   .weeknav button:hover { background:#e4e6e9; }
+  .langsel { margin-left:10px; background:#f0f1f3; border:0; border-radius:6px; padding:6px 8px; cursor:pointer; font-size:13px; color:#333; }
   .cal { display:grid; grid-template-columns:56px repeat(5,1fr); }
   .corner, .dayhead { border-bottom:1px solid var(--line); }
   .dayhead { padding:8px 6px; text-align:center; border-left:1px solid var(--line); }
@@ -349,7 +358,7 @@ HTML_PAGE = r'''<!DOCTYPE html>
   .dayhead .tot.over { color:#c0392b; }
   .dayhead .target { width:88px; margin-top:4px; border:1px solid var(--line); border-radius:5px; padding:3px 4px; font-size:11px; text-align:center; color:#555; }
   .dayhead .target::placeholder { color:#bfc4cb; }
-  /* all-day (已记录) row */
+  /* all-day (already-logged) row */
   .allday { border-bottom:1px solid var(--line); min-height:26px; padding:3px; border-left:1px solid var(--line); }
   .allday .chip { background:#eef0f2; color:#6b7178; border-radius:4px; font-size:11px; padding:2px 5px; margin:2px 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; border-left:3px solid var(--locked); }
   .gutlabel { font-size:11px; color:#9aa0a8; text-align:right; padding-right:6px; transform:translateY(-7px); }
@@ -400,84 +409,255 @@ HTML_PAGE = r'''<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1 id="title">GIWA 工时日历</h1>
-  <span class="wk" id="weekLabel">加载中…</span>
+  <h1 id="title" data-i18n="title">GIWA Time Calendar</h1>
+  <span class="wk" id="weekLabel">Loading…</span>
   <div class="weeknav">
-    <button onclick="changeWeek(-1)">◀ 上周</button>
-    <button onclick="changeWeek(0,true)">本周</button>
-    <button onclick="changeWeek(1)">下周 ▶</button>
+    <button onclick="changeWeek(-1)" data-i18n="prevWeek">◀ Prev</button>
+    <button onclick="changeWeek(0,true)" data-i18n="thisWeek">This week</button>
+    <button onclick="changeWeek(1)" data-i18n="nextWeek">Next ▶</button>
   </div>
+  <select class="langsel" id="langSel" onchange="setLang(this.value)" title="Language">
+    <option value="en">English</option>
+    <option value="zh">中文</option>
+    <option value="es">Español</option>
+    <option value="ca">Català</option>
+  </select>
 </header>
 <div id="cal" class="cal"></div>
 <div id="bottom">
   <div id="stats" class="bcol">
-    <h3>🧮 本周工时统计</h3>
+    <h3 data-i18n="statsTitle">🧮 This week's hours</h3>
     <div id="statsBody"></div>
   </div>
   <div id="gitarea" class="bcol">
-    <h3>📦 本周 GitLab 活动</h3>
-    <div id="gpBody">加载中…</div>
+    <h3 data-i18n="gitlabTitle">📦 This week's GitLab activity</h3>
+    <div id="gpBody">Loading…</div>
   </div>
 </div>
 <div id="result"></div>
 <footer>
-  <span class="grand" id="grand">合计 0h</span>
-  <span class="hint">在某天时间轴上按住拖动 = 新建时间块（自动按 15 分钟吸附）。灰色卡片是已记录的工时。</span>
-  <button class="btn btn-submit" id="submitBtn" onclick="submitAll()">提交到 GIWA</button>
+  <span class="grand" id="grand"></span>
+  <span class="hint" data-i18n="footerHint">Drag on a day's timeline to create a time block (snaps to 15 min). Grey cards are already-logged hours.</span>
+  <button class="btn btn-submit" id="submitBtn" onclick="submitAll()" data-i18n="submit">Submit to GIWA</button>
 </footer>
 
 <div id="overlay" onclick="closePopup()"></div>
 <div id="popup">
-  <h3>这段时间在做哪个任务？</h3>
+  <h3 data-i18n="popupTitle">Which task were you working on?</h3>
   <div class="sub" id="popupRange"></div>
   <select id="popupTask"></select>
-  <input id="popupComment" placeholder="备注（可选，留空自动用任务标题）">
+  <input id="popupComment" data-i18n-ph="commentPlaceholder" placeholder="Note (optional; blank = use task title)">
   <div class="row">
-    <button class="btn btn-ghost" onclick="closePopup()">取消</button>
-    <button class="btn btn-primary" onclick="confirmBlock()">添加</button>
+    <button class="btn btn-ghost" onclick="closePopup()" data-i18n="cancel">Cancel</button>
+    <button class="btn btn-primary" onclick="confirmBlock()" data-i18n="add">Add</button>
   </div>
 </div>
 
 <script>
+// ---------- i18n: 4 languages (English default), browser auto-detect + switcher ----------
+const I18N = {
+  en: {
+    title: "GIWA Time Calendar",
+    prevWeek: "◀ Prev", thisWeek: "This week", nextWeek: "Next ▶",
+    loading: "Loading…", errPrefix: "Error: ",
+    statsTitle: "🧮 This week's hours",
+    gitlabTitle: "📦 This week's GitLab activity",
+    footerHint: "Drag on a day's timeline to create a time block (snaps to 15 min). Grey cards are already-logged hours.",
+    submit: "Submit to GIWA", submitting: "Submitting…",
+    popupTitle: "Which task were you working on?",
+    commentPlaceholder: "Note (optional; blank = use task title)",
+    cancel: "Cancel", add: "Add", del: "Delete",
+    targetPlaceholder: "Target h",
+    targetTitle: "Optional: expected working hours for the day. 7:45 / 7.45 / 745 = 7h45m, 8 = 8h. Reminder only, not enforced.",
+    statsDaily: "Per day (logged + new)", statsByProject: "By project",
+    chooseTask: "Choose a task…",
+    grpGitlab: "🦊 gitlab (linked from this week's PRs/branches)",
+    grpRecent: "🕒 Last 7 days (touched by you, any status)",
+    gitlabNotConfigured: "GitLab not configured (set GITLAB_URL / GITLAB_TOKEN in .env)",
+    gitlabNoActivity: "No GitLab activity this week",
+    alertChooseTask: "Please choose a task",
+    alertNoBlocks: "No time blocks yet. Drag on a day's timeline to create one.",
+    exactlyMet: "Exactly on target",
+    dow: ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'],
+    weekN: n => `(week ${n})`,
+    logged: (id, h) => `Logged #${id} · ${h}h`,
+    statsTotal: (g, n) => `Total ${g} · new ${n}`,
+    grandTotal: (g, n) => `Week total ${g} (new ${n})`,
+    short: x => `${x} short`, over: x => `${x} over`,
+    confirmSubmit: (count, disp, dec) => `Write ${count} time entries to GIWA, total ${disp} (GIWA records ${dec}h). Submit?`,
+    submitFailed: e => `Submit failed: ${e}`,
+    submitOk: n => `✓ Submitted ${n} entries; converted to "logged".`,
+  },
+  zh: {
+    title: "GIWA 工时日历",
+    prevWeek: "◀ 上周", thisWeek: "本周", nextWeek: "下周 ▶",
+    loading: "加载中…", errPrefix: "出错: ",
+    statsTitle: "🧮 本周工时统计",
+    gitlabTitle: "📦 本周 GitLab 活动",
+    footerHint: "在某天时间轴上按住拖动 = 新建时间块（自动按 15 分钟吸附）。灰色卡片是已记录的工时。",
+    submit: "提交到 GIWA", submitting: "提交中…",
+    popupTitle: "这段时间在做哪个任务？",
+    commentPlaceholder: "备注（可选，留空自动用任务标题）",
+    cancel: "取消", add: "添加", del: "删除",
+    targetPlaceholder: "目标工时",
+    targetTitle: "可选：填当天应上班时长。7:45 / 7.45 / 745 都=7h45m，8=8h。只做提醒，不限制。",
+    statsDaily: "每天（已记录＋新增）", statsByProject: "按项目",
+    chooseTask: "选择任务…",
+    grpGitlab: "🦊 gitlab（本周 PR/分支关联）",
+    grpRecent: "🕒 最近7天（你处理过的，任何状态）",
+    gitlabNotConfigured: "未配置 GitLab（在 .env 设 GITLAB_URL / GITLAB_TOKEN）",
+    gitlabNoActivity: "本周暂无 GitLab 活动",
+    alertChooseTask: "请选择一个任务",
+    alertNoBlocks: "还没有新建时间块。在某天时间轴上拖动即可。",
+    exactlyMet: "正好达标",
+    dow: ['周日','周一','周二','周三','周四','周五','周六'],
+    weekN: n => `（第 ${n} 周）`,
+    logged: (id, h) => `已记 #${id} · ${h}h`,
+    statsTotal: (g, n) => `合计 ${g}　·　新增 ${n}`,
+    grandTotal: (g, n) => `本周合计 ${g}（新增 ${n}）`,
+    short: x => `还差 ${x}`, over: x => `超出 ${x}`,
+    confirmSubmit: (count, disp, dec) => `将向 GIWA 写入 ${count} 条工时，合计 ${disp}（GIWA 记 ${dec}h）。确认提交？`,
+    submitFailed: e => `提交失败: ${e}`,
+    submitOk: n => `✓ 成功提交 ${n} 条工时，已转为「已记录」。`,
+  },
+  es: {
+    title: "Calendario de horas GIWA",
+    prevWeek: "◀ Ant.", thisWeek: "Esta semana", nextWeek: "Sig. ▶",
+    loading: "Cargando…", errPrefix: "Error: ",
+    statsTitle: "🧮 Horas de esta semana",
+    gitlabTitle: "📦 Actividad GitLab de esta semana",
+    footerHint: "Arrastra en la línea de tiempo de un día para crear un bloque (ajuste de 15 min). Las tarjetas grises son horas ya registradas.",
+    submit: "Enviar a GIWA", submitting: "Enviando…",
+    popupTitle: "¿En qué tarea trabajabas?",
+    commentPlaceholder: "Nota (opcional; vacío = título de la tarea)",
+    cancel: "Cancelar", add: "Añadir", del: "Eliminar",
+    targetPlaceholder: "Horas obj.",
+    targetTitle: "Opcional: horas previstas del día. 7:45 / 7.45 / 745 = 7h45m, 8 = 8h. Solo recordatorio, no obligatorio.",
+    statsDaily: "Por día (registrado + nuevo)", statsByProject: "Por proyecto",
+    chooseTask: "Elige una tarea…",
+    grpGitlab: "🦊 gitlab (vinculado a PRs/ramas de esta semana)",
+    grpRecent: "🕒 Últimos 7 días (en los que has trabajado, cualquier estado)",
+    gitlabNotConfigured: "GitLab no configurado (define GITLAB_URL / GITLAB_TOKEN en .env)",
+    gitlabNoActivity: "Sin actividad de GitLab esta semana",
+    alertChooseTask: "Elige una tarea",
+    alertNoBlocks: "Aún no hay bloques. Arrastra en la línea de tiempo de un día para crear uno.",
+    exactlyMet: "Justo en el objetivo",
+    dow: ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'],
+    weekN: n => `(semana ${n})`,
+    logged: (id, h) => `Registrado #${id} · ${h}h`,
+    statsTotal: (g, n) => `Total ${g} · nuevo ${n}`,
+    grandTotal: (g, n) => `Total semana ${g} (nuevo ${n})`,
+    short: x => `faltan ${x}`, over: x => `${x} de más`,
+    confirmSubmit: (count, disp, dec) => `Se escribirán ${count} entradas de tiempo en GIWA, total ${disp} (GIWA registra ${dec}h). ¿Confirmar?`,
+    submitFailed: e => `Error al enviar: ${e}`,
+    submitOk: n => `✓ Enviadas ${n} entradas; convertidas a "registrado".`,
+  },
+  ca: {
+    title: "Calendari d'hores GIWA",
+    prevWeek: "◀ Ant.", thisWeek: "Aquesta setmana", nextWeek: "Seg. ▶",
+    loading: "Carregant…", errPrefix: "Error: ",
+    statsTitle: "🧮 Hores d'aquesta setmana",
+    gitlabTitle: "📦 Activitat GitLab d'aquesta setmana",
+    footerHint: "Arrossega a la línia de temps d'un dia per crear un bloc (ajust de 15 min). Les targetes grises són hores ja registrades.",
+    submit: "Envia a GIWA", submitting: "Enviant…",
+    popupTitle: "En quina tasca treballaves?",
+    commentPlaceholder: "Nota (opcional; buit = títol de la tasca)",
+    cancel: "Cancel·la", add: "Afegeix", del: "Elimina",
+    targetPlaceholder: "Hores obj.",
+    targetTitle: "Opcional: hores previstes del dia. 7:45 / 7.45 / 745 = 7h45m, 8 = 8h. Només recordatori, no obligatori.",
+    statsDaily: "Per dia (registrat + nou)", statsByProject: "Per projecte",
+    chooseTask: "Tria una tasca…",
+    grpGitlab: "🦊 gitlab (vinculat a PRs/branques d'aquesta setmana)",
+    grpRecent: "🕒 Últims 7 dies (en què has treballat, qualsevol estat)",
+    gitlabNotConfigured: "GitLab no configurat (defineix GITLAB_URL / GITLAB_TOKEN a .env)",
+    gitlabNoActivity: "Sense activitat de GitLab aquesta setmana",
+    alertChooseTask: "Tria una tasca",
+    alertNoBlocks: "Encara no hi ha blocs. Arrossega a la línia de temps d'un dia per crear-ne un.",
+    exactlyMet: "Just a l'objectiu",
+    dow: ['Dg','Dl','Dt','Dc','Dj','Dv','Ds'],
+    weekN: n => `(setmana ${n})`,
+    logged: (id, h) => `Registrat #${id} · ${h}h`,
+    statsTotal: (g, n) => `Total ${g} · nou ${n}`,
+    grandTotal: (g, n) => `Total setmana ${g} (nou ${n})`,
+    short: x => `falten ${x}`, over: x => `${x} de més`,
+    confirmSubmit: (count, disp, dec) => `S'escriuran ${count} entrades de temps a GIWA, total ${disp} (GIWA registra ${dec}h). Confirmar?`,
+    submitFailed: e => `Error en enviar: ${e}`,
+    submitOk: n => `✓ Enviades ${n} entrades; convertides a "registrat".`,
+  },
+};
+function detectLang() {
+  const saved = localStorage.getItem('giwa_lang');
+  if (saved && I18N[saved]) return saved;
+  const navs = navigator.languages || [navigator.language || 'en'];
+  for (const raw of navs) {
+    const code = (raw || '').toLowerCase();
+    if (code.startsWith('zh')) return 'zh';
+    if (code.startsWith('ca')) return 'ca';   // check Catalan before Spanish
+    if (code.startsWith('es')) return 'es';
+    if (code.startsWith('en')) return 'en';
+  }
+  return 'en';
+}
+let LANG = detectLang();
+let T = Object.assign({}, I18N.en, I18N[LANG]);
+const dowName = date => T.dow[new Date(date + 'T00:00:00').getDay()];
+function applyStatic() {
+  document.documentElement.lang = LANG;
+  document.title = T.title;
+  document.querySelectorAll('[data-i18n]').forEach(el => { const k = el.dataset.i18n; if (T[k] != null) el.textContent = T[k]; });
+  document.querySelectorAll('[data-i18n-ph]').forEach(el => { const k = el.dataset.i18nPh; if (T[k] != null) el.placeholder = T[k]; });
+  const ls = document.getElementById('langSel'); if (ls) ls.value = LANG;
+}
+function setLang(l) {
+  if (!I18N[l]) return;
+  LANG = l; localStorage.setItem('giwa_lang', l);
+  T = Object.assign({}, I18N.en, I18N[l]);
+  applyStatic();
+  if (DATA && !DATA.error) { render(); renderGitlab(); renderStats(); }
+}
+function updateWeekLabel() {
+  if (DATA && !DATA.error) document.getElementById('weekLabel').textContent = `${DATA.week_start} ~ ${DATA.week_end} ${T.weekN(DATA.week_num)}`;
+}
+
 const START_H = 7, END_H = 22, PXH = 44, SNAP = 15;
 const TOTAL_MIN = (END_H - START_H) * 60;
 let DATA = null, weekOffset = 0;
-let blocks = [];          // 新建块 {bid, issue_id, subject, date, s, e, comment}
+let blocks = [];          // new blocks {bid, issue_id, subject, date, s, e, comment}
 let bidSeq = 1;
 let drag = null;          // {date, col, s, e, el}
-let pending = null;       // 待确认的块范围
+let pending = null;       // pending block range awaiting confirmation
 
 const fmt = m => String(Math.floor(m/60)).padStart(2,'0') + ':' + String(m%60).padStart(2,'0');
 const minToY = m => (m - START_H*60) / 60 * PXH;
 const yToMin = y => { let m = START_H*60 + y/PXH*60; return Math.max(START_H*60, Math.min(END_H*60, Math.round(m/SNAP)*SNAP)); };
-// 时长格式化 / 解析
-// 时长显示用 H.MM 记法：2h45m → "2.45"，30m → "0.30"，1h → "1"。提交 GIWA 时另用十进制小时。
+// Duration formatting / parsing.
+// Durations display in H.MM notation: 2h45m → "2.45", 30m → "0.30", 1h → "1". Decimal hours are used when submitting to GIWA.
 const fmtDot = h => { if (!h) return '0'; const m = Math.round(h*60); const hh = Math.floor(m/60), mm = m%60; return mm ? hh + '.' + String(mm).padStart(2,'0') : '' + hh; };
-const decH = h => +(h).toFixed(2);  // 提交给 GIWA 的十进制小时
+const decH = h => +(h).toFixed(2);  // decimal hours submitted to GIWA
 const fmtColon = h => { const m = Math.round(h*60); return Math.floor(m/60) + ':' + String(m%60).padStart(2,'0'); };
 function parseHM(s) {
   s = (s||'').trim().toLowerCase().replace(/h/g, ':').replace(/m/g, '').replace(/\s/g, '');
   if (!s) return null;
-  // 点和冒号都作为「时:分」分隔符，分钟取字面值： 7:45 / 7.45 → 7h45m
+  // Both '.' and ':' act as the "h:m" separator; minutes are taken literally: 7:45 / 7.45 → 7h45m
   const sep = s.includes(':') ? ':' : (s.includes('.') ? '.' : null);
   if (sep) { const p = s.split(sep); return (parseInt(p[0],10)||0) + (p[1] ? (parseInt(p[1],10)||0)/60 : 0); }
-  // 纯数字： 1~2 位=小时(8→8h)，3~4 位按 HMM(745→7h45m, 830→8h30m)
+  // Plain digits: 1–2 digits = hours (8→8h), 3–4 digits as HMM (745→7h45m, 830→8h30m)
   if (/^\d+$/.test(s)) {
     if (s.length <= 2) return parseInt(s, 10);
     return (parseInt(s.slice(0,-2),10)||0) + (parseInt(s.slice(-2),10)||0)/60;
   }
   const v = parseFloat(s); return isNaN(v) ? null : v;
 }
-// 每日目标工时（按具体日期记在本地，每周独立、不共享）
+// Daily target hours (stored locally per specific date, independent per week, not shared)
 function loadTargets() { try { return JSON.parse(localStorage.getItem('giwa_targets')) || {}; } catch(e) { return {}; } }
 let TARGETS = loadTargets();
 function setTarget(date, val) { const h = parseHM(val); if (h == null || isNaN(h) || h <= 0) delete TARGETS[date]; else TARGETS[date] = h; localStorage.setItem('giwa_targets', JSON.stringify(TARGETS)); recalc(); }
 
 async function load() {
-  document.getElementById('weekLabel').textContent = '加载中…';
+  document.getElementById('weekLabel').textContent = T.loading;
   const r = await fetch('/api/init?week=' + weekOffset);
   DATA = await r.json();
-  if (DATA.error) { document.getElementById('weekLabel').textContent = '出错: ' + DATA.error; return; }
+  if (DATA.error) { document.getElementById('weekLabel').textContent = T.errPrefix + DATA.error; return; }
   blocks = [];
   document.getElementById('result').innerHTML = '';
   render();
@@ -488,7 +668,7 @@ function changeWeek(d, reset) { weekOffset = reset ? 0 : weekOffset + d; load();
 
 const giwaLink = s => (s || '').replace(/giwa[-_]?(\d+)/ig, (_, n) => `<a class="gp-giwa" href="${DATA.base}/issues/${n}" target="_blank">GIWA #${n}</a>`);
 
-// 左侧：本周工时统计（已记录 + 新增，按天 & 按项目）
+// Left panel: this week's hours (logged + new, by day & by project)
 function renderStats() {
   const body = document.getElementById('statsBody'); if (!body) return;
   let grand = 0, newTot = 0, rows = '';
@@ -497,26 +677,25 @@ function renderStats() {
     const nw = blocks.filter(b => b.date === d.date).reduce((s,b)=>s+(b.e-b.s)/60,0);
     const tot = ex + nw; grand += tot; newTot += nw;
     const tg = TARGETS[d.date];
-    rows += `<div class="st-row"><span>${d.label} ${d.date.slice(8)}</span><span>${tot?fmtDot(tot):'—'}${tg!=null?' / '+fmtDot(tg):''}</span></div>`;
+    rows += `<div class="st-row"><span>${dowName(d.date)} ${d.date.slice(8)}</span><span>${tot?fmtDot(tot):'—'}${tg!=null?' / '+fmtDot(tg):''}</span></div>`;
   });
   const proj = {};
   DATA.existing.forEach(e => { const k = e.projcode||'?'; proj[k] = (proj[k]||0) + e.hours; });
   blocks.forEach(b => { const k = b.projcode||'?'; proj[k] = (proj[k]||0) + (b.e-b.s)/60; });
   const prows = Object.keys(proj).sort((a,b)=>proj[b]-proj[a])
     .map(k => `<div class="st-row"><span>${k}</span><span>${fmtDot(proj[k])}</span></div>`).join('') || '<div class="st-row"><span>—</span><span></span></div>';
-  body.innerHTML = `<div class="st-sec">每天（已记录＋新增）</div>${rows}<div class="st-sec">按项目</div>${prows}<div class="st-total">合计 ${fmtDot(grand)}　·　新增 ${fmtDot(newTot)}</div>`;
+  body.innerHTML = `<div class="st-sec">${T.statsDaily}</div>${rows}<div class="st-sec">${T.statsByProject}</div>${prows}<div class="st-total">${T.statsTotal(fmtDot(grand), fmtDot(newTot))}</div>`;
 }
 
 function renderGitlab() {
   const body = document.getElementById('gpBody');
   const gl = DATA.gitlab;
-  if (!gl || !gl.enabled) { body.innerHTML = '<span style="color:#999">未配置 GitLab（在 .env 设 GITLAB_URL / GITLAB_TOKEN）</span>'; return; }
-  const wd = ['周日','周一','周二','周三','周四','周五','周六'];
+  if (!gl || !gl.enabled) { body.innerHTML = `<span style="color:#999">${T.gitlabNotConfigured}</span>`; return; }
   let html = '';
   (gl.days || []).forEach(date => {
     const items = gl.byday[date] || [];
     if (!items.length) return;
-    const dow = wd[new Date(date + 'T00:00:00').getDay()];
+    const dow = dowName(date);
     html += `<div class="gp-day"><h4>${date.slice(5)} ${dow}</h4>`;
     items.forEach(it => {
       if (it.type === 'push') {
@@ -527,27 +706,27 @@ function renderGitlab() {
     });
     html += '</div>';
   });
-  body.innerHTML = html || '<span style="color:#999">本周暂无 GitLab 活动</span>';
+  body.innerHTML = html || `<span style="color:#999">${T.gitlabNoActivity}</span>`;
 }
 
 function render() {
-  document.getElementById('weekLabel').textContent = DATA.week_label;
+  updateWeekLabel();
   const cal = document.getElementById('cal');
-  // 表头
+  // Header row
   let html = '<div class="corner"></div>';
   DATA.days.forEach((d, idx) => {
-    html += `<div class="dayhead"><div class="wd">${d.label}</div><div class="dt">${d.date.slice(8)}</div>` +
+    html += `<div class="dayhead"><div class="wd">${dowName(d.date)}</div><div class="dt">${d.date.slice(8)}</div>` +
             `<div class="tot" id="tot-${d.date}"></div>` +
-            `<input class="target" id="tg-${d.date}" placeholder="目标工时" title="可选：填当天应上班时长。7:45 / 7.45 / 745 都=7h45m，8=8h。只做提醒，不限制。" onchange="setTarget('${d.date}', this.value)"></div>`;
+            `<input class="target" id="tg-${d.date}" placeholder="${T.targetPlaceholder}" title="${T.targetTitle}" onchange="setTarget('${d.date}', this.value)"></div>`;
   });
-  // 已记录（全天行）
+  // Already-logged (all-day row)
   html += '<div class="allday" style="border-left:0"></div>';
   DATA.days.forEach(d => {
     const exs = DATA.existing.filter(e => e.date === d.date);
-    let chips = exs.map(e => `<div class="chip" title="#${e.issue_id} ${e.subject}">已记 #${e.issue_id} · ${e.hours}h</div>`).join('');
+    let chips = exs.map(e => `<div class="chip" title="#${e.issue_id} ${e.subject}">${T.logged(e.issue_id, e.hours)}</div>`).join('');
     html += `<div class="allday">${chips}</div>`;
   });
-  // 时间网格
+  // Time grid
   const gh = TOTAL_MIN/60 * PXH;
   let gutter = '<div style="position:relative;height:' + gh + 'px">';
   for (let h = START_H; h <= END_H; h++) gutter += `<div class="gutlabel" style="position:absolute;top:${minToY(h*60)}px;right:6px">${h}:00</div>`;
@@ -558,9 +737,9 @@ function render() {
   });
   cal.style.gridTemplateRows = 'auto auto 1fr';
   cal.innerHTML = html;
-  // 回填已保存的每日目标
+  // Restore saved daily targets
   DATA.days.forEach(d => { const inp = document.getElementById('tg-' + d.date); if (inp && TARGETS[d.date] != null) inp.value = fmtColon(TARGETS[d.date]); });
-  // 小时线 + 拖拽绑定
+  // Hour lines + drag binding
   DATA.days.forEach(d => {
     const g = document.getElementById('grid-' + d.date);
     for (let h = START_H; h <= END_H; h++) { const l = document.createElement('div'); l.className='hourline'; l.style.top = minToY(h*60)+'px'; g.appendChild(l); }
@@ -571,7 +750,7 @@ function render() {
 }
 
 function startDrag(ev) {
-  if (ev.target.closest('.block')) return;   // 点在已有块上不新建
+  if (ev.target.closest('.block')) return;   // clicking on an existing block doesn't create a new one
   const g = ev.currentTarget;
   const rect = g.getBoundingClientRect();
   const s = yToMin(ev.clientY - rect.top);
@@ -599,7 +778,7 @@ function endDrag(ev) {
   const a = Math.min(drag.s, drag.e), b = Math.max(drag.s, drag.e);
   drag.el.remove();
   const dd = drag; drag = null;
-  if (b - a < SNAP) return;                 // 太短忽略
+  if (b - a < SNAP) return;                 // too short, ignore
   pending = { date: dd.date, s: a, e: b };
   openPopup(ev);
 }
@@ -611,20 +790,20 @@ function positionBlock(el, s, e) {
 
 function openPopup(ev) {
   const sel = document.getElementById('popupTask');
-  // 按项目分组（optgroup）；项目按任务数多→少排，组内会议置顶、其余按编号新→旧
+  // Group by project (optgroup); projects sorted by task count desc; within a group meetings first, the rest by id newest→oldest
   const byProj = {};
   DATA.all_tasks.forEach(t => { (byProj[t.project] = byProj[t.project] || []).push(t); });
   const projNames = Object.keys(byProj).sort((a, b) => byProj[b].length - byProj[a].length || a.localeCompare(b));
-  let opts = '<option value="">选择任务…</option>';
-  // gitlab：本周 PR/分支关联的 GIWA 任务，置于最顶
+  let opts = `<option value="">${T.chooseTask}</option>`;
+  // gitlab: GIWA tasks linked to this week's PRs/branches, pinned at the top
   if (DATA.gitlab_tasks && DATA.gitlab_tasks.length) {
-    opts += '<optgroup label="🦊 gitlab（本周 PR/分支关联）">';
+    opts += `<optgroup label="${T.grpGitlab}">`;
     DATA.gitlab_tasks.forEach(t => { opts += `<option value="${t.id}">[${t.tracker||'—'}] #${t.id} · ${(t.label||t.subject).slice(0,40)} · ${t.projcode}</option>`; });
     opts += '</optgroup>';
   }
-  // 最近 7 天处理过的
+  // Touched in the last 7 days
   if (DATA.recent && DATA.recent.length) {
-    opts += '<optgroup label="🕒 最近7天（你处理过的，任何状态）">';
+    opts += `<optgroup label="${T.grpRecent}">`;
     DATA.recent.forEach(t => { opts += `<option value="${t.id}">[${t.tracker||'—'}] #${t.id} · ${(t.label||t.subject).slice(0,42)} · ${t.projcode}</option>`; });
     opts += '</optgroup>';
   }
@@ -652,7 +831,7 @@ function closePopup() {
 }
 function confirmBlock() {
   const id = parseInt(document.getElementById('popupTask').value);
-  if (!id) { alert('请选择一个任务'); return; }
+  if (!id) { alert(T.alertChooseTask); return; }
   const t = DATA.all_tasks.find(x => x.id === id) || (DATA.recent || []).find(x => x.id === id) || (DATA.gitlab_tasks || []).find(x => x.id === id);
   blocks.push({ bid: bidSeq++, issue_id: id, subject: t ? (t.label || t.subject) : '', projcode: t ? t.projcode : '',
                 date: pending.date, s: pending.s, e: pending.e, comment: document.getElementById('popupComment').value.trim() });
@@ -668,7 +847,7 @@ function renderBlocks() {
     const el = document.createElement('div');
     el.className = 'block';
     positionBlock(el, b.s, b.e);
-    el.innerHTML = `<div class="rsz top"></div><span class="x" onclick="delBlock(${b.bid})" title="删除">×</span>` +
+    el.innerHTML = `<div class="rsz top"></div><span class="x" onclick="delBlock(${b.bid})" title="${T.del}">×</span>` +
       `<span class="dur">${fmtDot((b.e-b.s)/60)} ${fmt(b.s)}–${fmt(b.e)}</span> 【${b.projcode}】#${b.issue_id}<br>` +
       `<span style="opacity:.9">${b.subject.slice(0,26)}</span><div class="rsz bot"></div>`;
     el.addEventListener('mousedown', e => blockMouseDown(e, b.bid));
@@ -677,7 +856,7 @@ function renderBlocks() {
 }
 function delBlock(bid) { blocks = blocks.filter(b => b.bid !== bid); renderBlocks(); recalc(); }
 
-// 拖动整块移动 / 拖上下边缘拉长缩短（15 分钟吸附）
+// Drag the whole block to move it / drag the top/bottom edge to resize (15-min snap)
 function blockMouseDown(ev, bid) {
   if (ev.target.classList.contains('x')) return;
   ev.stopPropagation(); ev.preventDefault();
@@ -713,7 +892,7 @@ function recalc() {
       else { cls = 'over'; bg = '#fdf3f2'; }
       if (el) {
         el.textContent = `${fmtDot(tot)} / ${fmtDot(tg)}`;
-        el.title = Math.abs(diff) < 0.01 ? '正好达标' : (diff < 0 ? `还差 ${fmtDot(-diff)}` : `超出 ${fmtDot(diff)}`);
+        el.title = Math.abs(diff) < 0.01 ? T.exactlyMet : (diff < 0 ? T.short(fmtDot(-diff)) : T.over(fmtDot(diff)));
       }
     } else {
       if (el) { el.textContent = tot ? fmtDot(tot) : ''; el.title = ''; }
@@ -722,39 +901,40 @@ function recalc() {
     if (g) g.style.background = bg;
   });
   const newTot = blocks.reduce((s,b)=>s+(b.e-b.s)/60,0);
-  document.getElementById('grand').textContent = `本周合计 ${fmtDot(grand)}（新增 ${fmtDot(newTot)}）`;
+  document.getElementById('grand').textContent = T.grandTotal(fmtDot(grand), fmtDot(newTot));
   renderStats();
 }
 
 async function submitAll() {
-  if (!blocks.length) { alert('还没有新建时间块。在某天时间轴上拖动即可。'); return; }
+  if (!blocks.length) { alert(T.alertNoBlocks); return; }
   const entries = blocks.map(b => ({ issue_id: b.issue_id, date: b.date, hours: decH((b.e-b.s)/60), comment: b.comment }));
   const total = entries.reduce((s,e)=>s+e.hours,0);
-  if (!confirm(`将向 GIWA 写入 ${entries.length} 条工时，合计 ${fmtDot(total)}（GIWA 记 ${total.toFixed(2)}h）。确认提交？`)) return;
+  if (!confirm(T.confirmSubmit(entries.length, fmtDot(total), total.toFixed(2)))) return;
   const btn = document.getElementById('submitBtn');
-  btn.disabled = true; btn.textContent = '提交中…';
+  btn.disabled = true; btn.textContent = T.submitting;
   const r = await fetch('/api/submit', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ entries }) });
   const res = await r.json();
   const box = document.getElementById('result');
   box.innerHTML = '';
-  if (res.error) box.innerHTML = `<div class="msg err">提交失败: ${res.error}</div>`;
+  if (res.error) box.innerHTML = `<div class="msg err">${T.submitFailed(res.error)}</div>`;
   else {
     const ok = res.filter(x=>x.ok), bad = res.filter(x=>!x.ok);
-    if (ok.length) box.innerHTML += `<div class="msg ok">✓ 成功提交 ${ok.length} 条工时，已转为「已记录」。</div>`;
+    if (ok.length) box.innerHTML += `<div class="msg ok">${T.submitOk(ok.length)}</div>`;
     bad.forEach(b => box.innerHTML += `<div class="msg err">✗ #${b.issue_id} ${b.date} ${b.hours}h — ${b.error}</div>`);
-    // 成功的转入 existing（变灰卡片），从新建块移除
+    // Move successful ones into existing (grey cards) and remove them from the new blocks
     ok.forEach(e => {
       DATA.existing.push({ issue_id:e.issue_id, date:e.date, hours:e.hours, subject:(DATA.all_tasks.find(t=>t.id===e.issue_id)||{}).subject||'' });
       blocks = blocks.filter(b => !(b.issue_id===e.issue_id && b.date===e.date && Math.abs((b.e-b.s)/60 - e.hours) < 0.001));
     });
     render();
   }
-  btn.disabled = false; btn.textContent = '提交到 GIWA';
+  btn.disabled = false; btn.textContent = T.submit;
 }
 
+applyStatic();
 load();
 
-// 心跳：每 3 秒告诉服务端页面还开着；关闭/离开页面时通知服务端自动退出
+// Heartbeat: tell the server every 3s the page is still open; on close/leave, notify the server to exit automatically
 setInterval(() => { fetch('/api/ping').catch(()=>{}); }, 3000);
 window.addEventListener('pagehide', () => { try { navigator.sendBeacon('/api/close'); } catch(e){} });
 window.addEventListener('beforeunload', () => { try { navigator.sendBeacon('/api/close'); } catch(e){} });

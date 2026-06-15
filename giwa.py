@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""GIWA (Redmine) 一键查询工具 — 零依赖，仅用 Python 标准库。
+"""GIWA (Redmine) one-shot query tool — zero dependencies, Python standard library only.
 
-用法:
-    ./giwa overview      # 全局工单总览（开/关、按项目、按状态、按负责人）
+Usage:
+    ./giwa overview      # Global issue overview (open/closed, by project, by status, by assignee)
 
-配置:
-    在项目根目录的 .env 文件中设置:
-        GIWA_URL=https://你的-redmine-地址
-        GIWA_KEY=你的_api_key
+Configuration:
+    Set the following in the .env file at the project root:
+        GIWA_URL=https://your-redmine-address
+        GIWA_KEY=your_api_key
 """
 
 import json
@@ -17,7 +17,7 @@ import urllib.request
 import urllib.error
 from collections import Counter
 
-# ---------- 终端颜色 ----------
+# ---------- Terminal colors ----------
 _TTY = sys.stdout.isatty()
 
 
@@ -33,9 +33,9 @@ def yellow(t):return c(t, "33")
 def cyan(t):  return c(t, "36")
 
 
-# ---------- 配置加载 ----------
+# ---------- Configuration loading ----------
 def _env_cfg():
-    """读取项目目录 .env，环境变量优先。"""
+    """Read .env from the project directory; environment variables take precedence."""
     here = os.path.dirname(os.path.abspath(__file__))
     env_path = os.path.join(here, ".env")
     cfg = {}
@@ -58,14 +58,14 @@ def load_env():
     url, key = cfg.get("GIWA_URL"), cfg.get("GIWA_KEY")
     if not url or not key:
         die(
-            "缺少配置。请在 .env 文件里设置 GIWA_URL 和 GIWA_KEY。\n"
-            "  可以复制 .env.example 为 .env 后填入你的 API key。"
+            "Missing configuration. Please set GIWA_URL and GIWA_KEY in the .env file.\n"
+            "  You can copy .env.example to .env and fill in your API key."
         )
     return url.rstrip("/"), key
 
 
 def extra_task_ids():
-    """常驻任务（内部/客户开会等，未必分配给我，但要出现在工时选择列表里）。"""
+    """Persistent tasks (internal/client meetings etc.; not necessarily assigned to me, but should appear in the time-entry selection list)."""
     val = _env_cfg().get("GIWA_EXTRA_TASKS", "")
     return [int(x) for x in val.replace(" ", "").split(",") if x.strip().isdigit()]
 
@@ -76,7 +76,7 @@ def gitlab_cfg():
 
 
 def gitlab_get(gurl, gtok, path):
-    """GitLab 只读 GET（/api/v4 前缀，PRIVATE-TOKEN 头）。"""
+    """GitLab read-only GET (/api/v4 prefix, PRIVATE-TOKEN header)."""
     req = urllib.request.Request(gurl + "/api/v4" + path, headers={"PRIVATE-TOKEN": gtok})
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.load(r)
@@ -95,12 +95,12 @@ def api_get(url, key, path):
             return json.load(resp)
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
-            die("认证失败：API key 无效或没有权限。请检查 .env 里的 GIWA_KEY。")
-        die(f"请求出错 (HTTP {e.code}): {path}")
+            die("Authentication failed: invalid API key or insufficient permissions. Please check GIWA_KEY in .env.")
+        die(f"Request error (HTTP {e.code}): {path}")
     except urllib.error.URLError as e:
-        die(f"无法连接 GIWA ({url})：{e.reason}")
+        die(f"Could not connect to GIWA ({url}): {e.reason}")
     except TimeoutError:
-        die("请求超时，请稍后重试或检查网络。")
+        die("Request timed out. Please retry later or check your network.")
 
 
 def api_post(url, key, path, payload):
@@ -126,13 +126,13 @@ def open_in_code(path, hint=""):
     import shutil, subprocess
     if shutil.which("code"):
         subprocess.run(["code", path])
-        print(dim(f"   已用 VS Code 打开。{hint}"))
+        print(dim(f"   Opened in VS Code. {hint}"))
     else:
-        print(dim(f"   未找到 code 命令，请手动打开：{path}"))
+        print(dim(f"   'code' command not found; please open manually: {path}"))
 
 
 def fetch_all_issues(url, key):
-    """分页抓取全部工单（含已关闭）。"""
+    """Fetch all issues with pagination (including closed)."""
     issues = []
     offset = 0
     while True:
@@ -140,7 +140,7 @@ def fetch_all_issues(url, key):
         issues += d["issues"]
         total = d["total_count"]
         offset += 100
-        sys.stderr.write(f"\r  抓取中… {min(offset, total)}/{total}")
+        sys.stderr.write(f"\r  Fetching… {min(offset, total)}/{total}")
         sys.stderr.flush()
         if offset >= total:
             break
@@ -149,11 +149,11 @@ def fetch_all_issues(url, key):
     return issues
 
 
-# ---------- 输出辅助 ----------
+# ---------- Output helpers ----------
 def table(rows, indent="  "):
-    """rows: [(count, label)] -> 对齐打印。"""
+    """rows: [(count, label)] -> aligned print."""
     if not rows:
-        print(indent + dim("(无)"))
+        print(indent + dim("(none)"))
         return
     w = max(len(str(r[0])) for r in rows)
     for count, label in rows:
@@ -164,7 +164,7 @@ def section(title):
     print("\n" + bold(title))
 
 
-# ---------- 命令: overview ----------
+# ---------- Command: overview ----------
 def cmd_overview(url, key, rest=None):
     print(dim(f"GIWA: {url}"))
     issues = fetch_all_issues(url, key)
@@ -181,39 +181,39 @@ def cmd_overview(url, key, rest=None):
         st = i["status"]["name"]
         by_status[st] += 1
         status_is_closed[st] = i["status"].get("is_closed", False)
-        a = (i.get("assigned_to") or {}).get("name", "(未分配)")
+        a = (i.get("assigned_to") or {}).get("name", "(unassigned)")
         by_assignee[a] += 1
         if i["status"].get("is_closed"):
             open_closed["closed"] += 1
         else:
             open_closed["open"] += 1
 
-    print("\n" + bold(f"📊 工单总览 — 共 {total} 个"))
+    print("\n" + bold(f"📊 Issue overview — {total} total"))
 
-    section("开 / 关")
+    section("Open / Closed")
     table([
-        (green(open_closed["open"]), green("进行中")),
-        (dim(open_closed["closed"]), dim("已关闭")),
+        (green(open_closed["open"]), green("Open")),
+        (dim(open_closed["closed"]), dim("Closed")),
     ])
 
-    section("📁 按项目")
+    section("📁 By project")
     table([(v, k) for k, v in by_proj.most_common()])
 
-    section("🏷️  按状态")
+    section("🏷️  By status")
     table([
         (v, (dim(k) if status_is_closed.get(k) else yellow(k)))
         for k, v in by_status.most_common()
     ])
 
-    section("👥 按负责人 (Top 15)")
+    section("👥 By assignee (Top 15)")
     table([(v, k) for k, v in by_assignee.most_common(15)])
     print()
 
 
-# ---------- 命令: mine ----------
-# 待处理状态优先级（越小越靠前），Resuelta 等已解决的排最后
+# ---------- Command: mine ----------
+# Pending-status ordering (smaller = higher up); resolved ones like Resuelta go last
 _STATUS_ORDER = {
-    "Crítica": 0, "Urgente": 0,  # (兜底，正常用 priority)
+    "Crítica": 0, "Urgente": 0,  # (fallback; normally use priority)
     "En curso": 1, "Nueva": 2, "Bloqueada": 3, "Feedback": 4,
     "Resuelta": 90, "Passed": 91, "Definition": 50,
 }
@@ -231,7 +231,7 @@ def cmd_mine(url, key, rest=None):
         if offset >= total:
             break
 
-    # 分「待处理」与「已解决待关闭(Resuelta/Passed)」
+    # Split into "pending" and "resolved, pending close (Resuelta/Passed)"
     done_states = {"Resuelta", "Passed"}
     pending = [i for i in issues if i["status"]["name"] not in done_states]
     resolved = [i for i in issues if i["status"]["name"] in done_states]
@@ -246,8 +246,8 @@ def cmd_mine(url, key, rest=None):
 
     from collections import defaultdict
     lines = []
-    lines.append("# 我的工单 (open)\n")
-    lines.append(f"> 来源：{url} · 共 **{len(issues)}** 个（待处理 {len(pending)} · 已解决待关闭 {len(resolved)}）\n")
+    lines.append("# My issues (open)\n")
+    lines.append(f"> Source: {url} · **{len(issues)}** total (To do {len(pending)} · Resolved, pending close {len(resolved)})\n")
 
     def render_group(title, items):
         lines.append(f"\n## {title} ({len(items)})\n")
@@ -256,7 +256,7 @@ def cmd_mine(url, key, rest=None):
             by_proj[i["project"]["name"]].append(i)
         for proj in sorted(by_proj, key=lambda p: -len(by_proj[p])):
             lines.append(f"\n### {proj}\n")
-            lines.append("| 工单 | 状态 | 优先级 | 截止 | 标题 |")
+            lines.append("| Issue | Status | Priority | Due | Subject |")
             lines.append("|---|---|---|---|---|")
             for i in sorted(by_proj[proj], key=sort_key):
                 due = i.get("due_date") or ""
@@ -266,31 +266,31 @@ def cmd_mine(url, key, rest=None):
                 )
 
     if pending:
-        render_group("🔧 待处理", pending)
+        render_group("🔧 To do", pending)
     if resolved:
-        render_group("✅ 已解决待关闭", resolved)
+        render_group("✅ Resolved, pending close", resolved)
 
     here = os.path.dirname(os.path.abspath(__file__))
     out_path = os.path.join(here, "MINE.md")
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
-    print(bold(f"📝 已导出 {len(issues)} 个工单 → ") + cyan(out_path))
-    print(f"   {green('待处理 ' + str(len(pending)))} · {dim('已解决待关闭 ' + str(len(resolved)))}")
+    print(bold(f"📝 Exported {len(issues)} issues → ") + cyan(out_path))
+    print(f"   {green('To do ' + str(len(pending)))} · {dim('Resolved, pending close ' + str(len(resolved)))}")
 
-    open_in_code(out_path, "按 Cmd+Shift+V 预览，链接可点击。")
+    open_in_code(out_path, "Press Cmd+Shift+V to preview; links are clickable.")
 
 
-# ---------- 命令: timesheet ----------
+# ---------- Command: timesheet ----------
 def cmd_timesheet(url, key, rest=None):
-    """启动本地网页·日历周视图，拖块记工时。见 timesheet_web.py。"""
+    """Launch the local web calendar week view; drag blocks to log time. See timesheet_web.py."""
     rest = rest or []
     port = 8765
     if "--port" in rest:
         try:
             port = int(rest[rest.index("--port") + 1])
         except (IndexError, ValueError):
-            die("--port 后面要跟端口号，例如 ./giwa timesheet --port 8790")
+            die("--port must be followed by a port number, e.g. ./giwa timesheet --port 8790")
     import timesheet_web
     gurl, gtok = gitlab_cfg()
     try:
@@ -300,7 +300,7 @@ def cmd_timesheet(url, key, rest=None):
         die(str(e))
 
 
-# ---------- 入口 ----------
+# ---------- Entry point ----------
 COMMANDS = {
     "overview": cmd_overview,
     "mine": cmd_mine,
@@ -309,12 +309,12 @@ COMMANDS = {
 
 
 def usage():
-    print("GIWA 一键查询工具\n")
-    print("用法: ./giwa <命令>\n")
-    print("命令:")
-    print("  overview              全局工单总览（开/关、按项目、按状态、按负责人）")
-    print("  mine                  我名下未关闭的工单，导出带链接的 MINE.md")
-    print("  timesheet [--port N]  打开本地网页·日历周视图，拖块记工时并提交到 GIWA")
+    print("GIWA one-shot query tool\n")
+    print("Usage: ./giwa <command>\n")
+    print("Commands:")
+    print("  overview              Global issue overview (open/closed, by project, by status, by assignee)")
+    print("  mine                  My open issues, exported to MINE.md with links")
+    print("  timesheet [--port N]  Open the local web calendar week view; drag blocks to log time and submit to GIWA")
     print()
 
 
@@ -326,7 +326,7 @@ def main():
     cmd = args[0]
     fn = COMMANDS.get(cmd)
     if not fn:
-        die(f"未知命令: {cmd}\n  运行 ./giwa --help 查看可用命令。")
+        die(f"Unknown command: {cmd}\n  Run ./giwa --help to see available commands.")
     url, key = load_env()
     fn(url, key, args[1:])
 
