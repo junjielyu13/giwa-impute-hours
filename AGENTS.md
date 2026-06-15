@@ -79,6 +79,10 @@ GitLab integration (read-only, `gitlab_cfg`/`gitlab_get` in `giwa.py`, configure
 
 Planned: `show #ID` (issue details + comments), `project NAME`, `due` (sorted by due date), `urgent`.
 
+## Tests
+
+`tests/test_timesheet.py` is a Playwright test for the web UI. It mocks every `/api/*` response (no Redmine server / API key needed) by route-interception, asserts the main behaviours (render, drag-to-create + popup, manual GIWA-ID option, GitLab links, language switcher), and regenerates `docs/timesheet.png` (the README screenshot) against mock data. Playwright is a dev-only dependency (`pip install playwright && playwright install chromium`); the tool itself stays zero-dependency. Keep the screenshot's data fake — never point it at the real instance, since the repo is public.
+
 ## Redmine API quick reference
 
 - **Authentication**: `X-Redmine-API-Key: <key>` header, or `?key=<key>`
