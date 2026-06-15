@@ -64,13 +64,15 @@ Already implemented:
   Task selection list: besides "open issues assigned to me", it also auto-discovers "internal/client meeting" Epics across projects
   (`/issues.json?subject=~Tareas`, then regex-filtered by `tareas (internas|externas)`), renamed to friendly titles
   "Internal Meeting / Client Meeting" pinned at the top; it also supports `GIWA_EXTRA_TASKS=id,id` in `.env` to manually add persistent tasks.
+  The dropdown also has a "✏️ Enter a GIWA ID manually…" option: if the task isn't listed, pick it to reveal a number input; the id is validated/enriched via `/api/issue?id=N` before the block is added.
   Dropdown and time blocks: group headers use the full project name (to distinguish similarly named projects), time blocks use the project code `split(" - ")[0]`.
   The dropdown groups by project via `<optgroup>` (projects sorted by task count), and options include the tracker type `[Task]/[Epic]/...`.
-  At the top of the selection list there are also two special groups: `🦊 gitlab` (GIWA tasks linked to this week's PRs/branches) and `🕒 last 7 days`
-  (`assigned_to_id=me&status_id=*&updated_on>=7 days ago`, including closed ones, for catching up on time entries).
+  At the top of the selection list there are also two special groups: `🦊 gitlab` (GIWA tasks linked to this week's PRs/branches) and `🕒 this week`
+  (issues you worked on during the *selected* week — `assigned_to_id=me&status_id=*&updated_on=><weekStart|weekEnd`, including closed ones, for catching up on time entries).
 
 GitLab integration (read-only, `gitlab_cfg`/`gitlab_get` in `giwa.py`, configured via `GITLAB_URL`/`GITLAB_TOKEN` in `.env`):
   the floating panel "📦 This week's GitLab activity" at the bottom-right of the time calendar lists pushes (repo/branch/commit count) and MRs by day;
+  repo / branch / MR are clickable links into GitLab (the server builds `repo_url`, `branch_url`, and the MR `url` from `target_iid`);
   `GIWA<number>` in branch/MR titles is auto-detected and linked to the GIWA issue, and is also used to generate the gitlab task group above.
   Implementation: `gitlab_activity()` in `timesheet_web.serve` calls `/api/v4/events?after=&before=` (by week),
   and `/api/v4/projects/:id` to get the repo name (with caching). The token should ideally only have read_api+read_user. Write operations are strictly forbidden.

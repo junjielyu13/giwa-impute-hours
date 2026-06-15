@@ -83,13 +83,20 @@ def serve(url, key, api_get, api_post, port=8765, extra_ids=None,
                     giwa_ids.add(int(m.group(1)))
             elif e.get("target_type") == "MergeRequest":
                 title = e.get("target_title") or ""
-                others.setdefault(d, []).append({"type": "mr", "repo": repo, "action": e.get("action_name", ""), "title": title})
+                iid = e.get("target_iid")
+                repo_url = f"{gitlab_url}/{repo}" if repo else gitlab_url
+                mr_url = f"{repo_url}/-/merge_requests/{iid}" if iid else repo_url
+                others.setdefault(d, []).append({"type": "mr", "repo": repo, "repo_url": repo_url,
+                                                 "action": e.get("action_name", ""), "title": title, "url": mr_url})
                 m = re.search(r"giwa[-_]?(\d+)", title, re.I)
                 if m:
                     giwa_ids.add(int(m.group(1)))
         byday = {}
         for (d, repo, branch), a in pushagg.items():
-            byday.setdefault(d, []).append({"type": "push", "repo": repo, "branch": branch, "count": a["count"], "title": a["title"]})
+            repo_url = f"{gitlab_url}/{repo}" if repo else gitlab_url
+            byday.setdefault(d, []).append({"type": "push", "repo": repo, "branch": branch,
+                                            "count": a["count"], "title": a["title"], "repo_url": repo_url,
+                                            "branch_url": f"{repo_url}/-/tree/{branch}" if branch else repo_url})
         for d, lst in others.items():
             byday.setdefault(d, []).extend(lst)
         return {"enabled": True, "days": [d.isoformat() for d in days], "byday": byday}, giwa_ids
@@ -151,11 +158,12 @@ def serve(url, key, api_get, api_post, port=8765, extra_ids=None,
         all_tasks = merged
         subj_of = {t["id"]: t["subject"] for t in all_tasks}
 
-        # Issues I touched/edited in the last 7 days (any status), shown at the top of the list
+        # Issues I touched/edited during the selected week (any status), shown at the top of the list
         recent = []
         try:
-            since = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
-            rc = api_get(url, key, f"/issues.json?assigned_to_id=me&status_id=*&updated_on=%3E%3D{since}&sort=updated_on:desc&limit=30")
+            wk_from = days[0].isoformat()                                   # Monday of the selected week
+            wk_to = (days[0] + datetime.timedelta(days=6)).isoformat()      # Sunday (covers the weekend too)
+            rc = api_get(url, key, f"/issues.json?assigned_to_id=me&status_id=*&updated_on=%3E%3C{wk_from}%7C{wk_to}&sort=updated_on:desc&limit=50")
             for i in rc.get("issues", []):
                 recent.append({"id": i["id"], "subject": i["subject"], "tracker": i["tracker"]["name"],
                                "project": i["project"]["name"], "projcode": _proj_code(i["project"]["name"]),
@@ -228,6 +236,13 @@ def serve(url, key, api_get, api_post, port=8765, extra_ids=None,
             "existing": existing,
         }
 
+    def issue_brief(iid):
+        """Look up a single issue for the manual-ID entry path (read-only)."""
+        di = api_get(url, key, f"/issues/{iid}.json")["issue"]
+        proj = di["project"]["name"]
+        return {"id": iid, "subject": di["subject"], "tracker": di["tracker"]["name"],
+                "project": proj, "projcode": _proj_code(proj), "status": di["status"]["name"]}
+
     def submit(entries):
         cache = {}
 
@@ -280,6 +295,17 @@ def serve(url, key, api_get, api_post, port=8765, extra_ids=None,
                     self._send(200, json.dumps(init(wk)))
                 except Exception as e:
                     self._send(500, json.dumps({"error": str(e)}))
+            elif p.path == "/api/issue":
+                q = urllib.parse.parse_qs(p.query)
+                # Catch BaseException: the injected api_get calls die()/sys.exit on a
+                # bad/nonexistent id, which raises SystemExit (not an Exception).
+                try:
+                    iid = int(q.get("id", ["0"])[0])
+                    if iid <= 0:
+                        raise ValueError("invalid id")
+                    self._send(200, json.dumps(issue_brief(iid)))
+                except BaseException as e:
+                    self._send(404, json.dumps({"error": str(e) or "not found"}))
             elif p.path == "/api/ping":
                 state["last"] = time.monotonic()
                 self._send(200, "{}")
@@ -400,6 +426,9 @@ HTML_PAGE = r'''<!DOCTYPE html>
   .gp-item .repo { color:#37404a; font-weight:600; }
   .gp-item .br { color:#1a73c7; }
   .gp-item.gp-mr { color:#7b3ff2; }
+  .gp-item a { text-decoration:none; }
+  .gp-item a:hover { text-decoration:underline; }
+  .gp-item a.mrlink { color:#7b3ff2; }
   .gp-giwa { background:var(--accent); color:#fff; border-radius:3px; padding:0 4px; font-weight:600; text-decoration:none; }
   #result { padding:0 20px; }
   .msg { padding:9px 13px; border-radius:8px; margin:6px 0; font-size:14px; }
@@ -445,7 +474,8 @@ HTML_PAGE = r'''<!DOCTYPE html>
 <div id="popup">
   <h3 data-i18n="popupTitle">Which task were you working on?</h3>
   <div class="sub" id="popupRange"></div>
-  <select id="popupTask"></select>
+  <select id="popupTask" onchange="onTaskSelChange()"></select>
+  <input id="popupManualId" type="number" min="1" style="display:none" data-i18n-ph="manualPlaceholder" placeholder="GIWA ID, e.g. 27509" onkeydown="if(event.key==='Enter')confirmBlock()">
   <input id="popupComment" data-i18n-ph="commentPlaceholder" placeholder="Note (optional; blank = use task title)">
   <div class="row">
     <button class="btn btn-ghost" onclick="closePopup()" data-i18n="cancel">Cancel</button>
@@ -471,8 +501,12 @@ const I18N = {
     targetTitle: "Optional: expected working hours for the day. 7:45 / 7.45 / 745 = 7h45m, 8 = 8h. Reminder only, not enforced.",
     statsDaily: "Per day (logged + new)", statsByProject: "By project",
     chooseTask: "Choose a task…",
+    manualOption: "✏️ Enter a GIWA ID manually…",
+    manualPlaceholder: "GIWA ID, e.g. 27509",
+    alertEnterId: "Please enter a valid GIWA ID",
+    idNotFound: id => `GIWA #${id} not found (check the ID)`,
     grpGitlab: "🦊 gitlab (linked from this week's PRs/branches)",
-    grpRecent: "🕒 Last 7 days (touched by you, any status)",
+    grpRecent: "🕒 This week (worked on by you, any status)",
     gitlabNotConfigured: "GitLab not configured (set GITLAB_URL / GITLAB_TOKEN in .env)",
     gitlabNoActivity: "No GitLab activity this week",
     alertChooseTask: "Please choose a task",
@@ -503,8 +537,12 @@ const I18N = {
     targetTitle: "可选：填当天应上班时长。7:45 / 7.45 / 745 都=7h45m，8=8h。只做提醒，不限制。",
     statsDaily: "每天（已记录＋新增）", statsByProject: "按项目",
     chooseTask: "选择任务…",
+    manualOption: "✏️ 手动输入 GIWA ID…",
+    manualPlaceholder: "GIWA ID，例如 27509",
+    alertEnterId: "请输入有效的 GIWA ID",
+    idNotFound: id => `找不到 GIWA #${id}（请检查 ID）`,
     grpGitlab: "🦊 gitlab（本周 PR/分支关联）",
-    grpRecent: "🕒 最近7天（你处理过的，任何状态）",
+    grpRecent: "🕒 本周（你处理过的，任何状态）",
     gitlabNotConfigured: "未配置 GitLab（在 .env 设 GITLAB_URL / GITLAB_TOKEN）",
     gitlabNoActivity: "本周暂无 GitLab 活动",
     alertChooseTask: "请选择一个任务",
@@ -535,8 +573,12 @@ const I18N = {
     targetTitle: "Opcional: horas previstas del día. 7:45 / 7.45 / 745 = 7h45m, 8 = 8h. Solo recordatorio, no obligatorio.",
     statsDaily: "Por día (registrado + nuevo)", statsByProject: "Por proyecto",
     chooseTask: "Elige una tarea…",
+    manualOption: "✏️ Introducir un ID de GIWA manualmente…",
+    manualPlaceholder: "ID de GIWA, p. ej. 27509",
+    alertEnterId: "Introduce un ID de GIWA válido",
+    idNotFound: id => `No se encontró GIWA #${id} (revisa el ID)`,
     grpGitlab: "🦊 gitlab (vinculado a PRs/ramas de esta semana)",
-    grpRecent: "🕒 Últimos 7 días (en los que has trabajado, cualquier estado)",
+    grpRecent: "🕒 Esta semana (en los que has trabajado, cualquier estado)",
     gitlabNotConfigured: "GitLab no configurado (define GITLAB_URL / GITLAB_TOKEN en .env)",
     gitlabNoActivity: "Sin actividad de GitLab esta semana",
     alertChooseTask: "Elige una tarea",
@@ -567,8 +609,12 @@ const I18N = {
     targetTitle: "Opcional: hores previstes del dia. 7:45 / 7.45 / 745 = 7h45m, 8 = 8h. Només recordatori, no obligatori.",
     statsDaily: "Per dia (registrat + nou)", statsByProject: "Per projecte",
     chooseTask: "Tria una tasca…",
+    manualOption: "✏️ Introduir un ID de GIWA manualment…",
+    manualPlaceholder: "ID de GIWA, p. ex. 27509",
+    alertEnterId: "Introdueix un ID de GIWA vàlid",
+    idNotFound: id => `No s'ha trobat GIWA #${id} (revisa l'ID)`,
     grpGitlab: "🦊 gitlab (vinculat a PRs/branques d'aquesta setmana)",
-    grpRecent: "🕒 Últims 7 dies (en què has treballat, qualsevol estat)",
+    grpRecent: "🕒 Aquesta setmana (en què has treballat, qualsevol estat)",
     gitlabNotConfigured: "GitLab no configurat (defineix GITLAB_URL / GITLAB_TOKEN a .env)",
     gitlabNoActivity: "Sense activitat de GitLab aquesta setmana",
     alertChooseTask: "Tria una tasca",
@@ -699,9 +745,15 @@ function renderGitlab() {
     html += `<div class="gp-day"><h4>${date.slice(5)} ${dow}</h4>`;
     items.forEach(it => {
       if (it.type === 'push') {
-        html += `<div class="gp-item">⬆ <span class="repo">${it.repo}</span> · <span class="br">${it.branch}</span> · ${it.count} commits<br>${giwaLink(it.branch)} ${(it.title||'').slice(0,55)}</div>`;
+        const repoEl = it.repo_url ? `<a class="repo" href="${it.repo_url}" target="_blank">${it.repo}</a>` : `<span class="repo">${it.repo}</span>`;
+        const brEl = it.branch_url ? `<a class="br" href="${it.branch_url}" target="_blank">${it.branch}</a>` : `<span class="br">${it.branch}</span>`;
+        html += `<div class="gp-item">⬆ ${repoEl} · ${brEl} · ${it.count} commits<br>${giwaLink(it.branch)} ${(it.title||'').slice(0,55)}</div>`;
       } else if (it.type === 'mr') {
-        html += `<div class="gp-item gp-mr">🔀 ${it.action} · <span class="repo">${it.repo}</span><br>${giwaLink((it.title||'').slice(0,60))}</div>`;
+        const repoEl = it.repo_url ? `<a class="repo" href="${it.repo_url}" target="_blank">${it.repo}</a>` : `<span class="repo">${it.repo}</span>`;
+        const title = (it.title||'').slice(0,60);
+        const titleEl = it.url ? `<a class="mrlink" href="${it.url}" target="_blank">${title}</a>` : title;
+        const actEl = it.url ? `<a class="mrlink" href="${it.url}" target="_blank">${it.action}</a>` : it.action;
+        html += `<div class="gp-item gp-mr">🔀 ${actEl} · ${repoEl}<br>${titleEl}</div>`;
       }
     });
     html += '</div>';
@@ -795,6 +847,7 @@ function openPopup(ev) {
   DATA.all_tasks.forEach(t => { (byProj[t.project] = byProj[t.project] || []).push(t); });
   const projNames = Object.keys(byProj).sort((a, b) => byProj[b].length - byProj[a].length || a.localeCompare(b));
   let opts = `<option value="">${T.chooseTask}</option>`;
+  opts += `<option value="__manual__">${T.manualOption}</option>`;
   // gitlab: GIWA tasks linked to this week's PRs/branches, pinned at the top
   if (DATA.gitlab_tasks && DATA.gitlab_tasks.length) {
     opts += `<optgroup label="${T.grpGitlab}">`;
@@ -815,6 +868,8 @@ function openPopup(ev) {
   });
   sel.innerHTML = opts;
   document.getElementById('popupComment').value = '';
+  const mid = document.getElementById('popupManualId');
+  mid.value = ''; mid.style.display = 'none';
   document.getElementById('popupRange').textContent =
     `${pending.date}　${fmt(pending.s)}–${fmt(pending.e)}　(${fmtDot((pending.e-pending.s)/60)})`;
   const pop = document.getElementById('popup');
@@ -829,12 +884,35 @@ function closePopup() {
   document.getElementById('popup').style.display = 'none';
   pending = null;
 }
-function confirmBlock() {
-  const id = parseInt(document.getElementById('popupTask').value);
-  if (!id) { alert(T.alertChooseTask); return; }
-  const t = DATA.all_tasks.find(x => x.id === id) || (DATA.recent || []).find(x => x.id === id) || (DATA.gitlab_tasks || []).find(x => x.id === id);
+// Show the manual GIWA-ID input when "Enter a GIWA ID manually" is chosen
+function onTaskSelChange() {
+  const manual = document.getElementById('popupTask').value === '__manual__';
+  const mid = document.getElementById('popupManualId');
+  mid.style.display = manual ? 'block' : 'none';
+  if (manual) mid.focus();
+}
+async function confirmBlock() {
+  const pend = pending;            // capture before any await (closePopup nulls it)
+  if (!pend) return;
+  const selVal = document.getElementById('popupTask').value;
+  let id, t;
+  if (selVal === '__manual__') {
+    id = parseInt(document.getElementById('popupManualId').value, 10);
+    if (!id || id <= 0) { alert(T.alertEnterId); return; }
+    // Validate the id exists and fetch its subject/project so the block looks right
+    try {
+      const r = await fetch('/api/issue?id=' + id);
+      const d = await r.json();
+      if (!r.ok || d.error) { alert(T.idNotFound(id)); return; }
+      t = d;
+    } catch (e) { alert(T.idNotFound(id)); return; }
+  } else {
+    id = parseInt(selVal);
+    if (!id) { alert(T.alertChooseTask); return; }
+    t = DATA.all_tasks.find(x => x.id === id) || (DATA.recent || []).find(x => x.id === id) || (DATA.gitlab_tasks || []).find(x => x.id === id);
+  }
   blocks.push({ bid: bidSeq++, issue_id: id, subject: t ? (t.label || t.subject) : '', projcode: t ? t.projcode : '',
-                date: pending.date, s: pending.s, e: pending.e, comment: document.getElementById('popupComment').value.trim() });
+                date: pend.date, s: pend.s, e: pend.e, comment: document.getElementById('popupComment').value.trim() });
   closePopup();
   renderBlocks(); recalc();
 }

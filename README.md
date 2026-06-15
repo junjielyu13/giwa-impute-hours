@@ -74,9 +74,10 @@ Open it in an editor that supports Markdown preview and click through to the cor
 - **Closing the tab automatically stops the server**: the page sends a heartbeat every 3 seconds and notifies the server to exit when closed;
   even if the browser crashes, a server-side 8-second heartbeat timeout will stop it as a fallback. You can also press Ctrl+C in the terminal.
 - **Task selection list**: grouped by project via `<optgroup>`, with options tagged by type `[Task]/[Epic]/[Incidencia]/...`;
-  at the top are two shortcut groups, **🦊 gitlab** (GIWA tasks linked to this week's PRs/branches) and **🕒 Last 7 days** (ones you've worked on, including closed).
+  at the top are two shortcut groups, **🦊 gitlab** (GIWA tasks linked to this week's PRs/branches) and **🕒 This week** (issues you worked on during the selected week, including closed).
+  Not listed? Pick **✏️ Enter a GIWA ID manually…** to type the ticket number directly (it's validated before being added).
 - **This week's GitLab activity** (floating panel in the bottom-right corner, requires `GITLAB_URL`/`GITLAB_TOKEN`, read-only):
-  lists by day which branch was pushed to which repo (commit count) and which MRs were opened/merged; a `GIWA<number>` in a branch name auto-links to the ticket.
+  lists by day which branch was pushed to which repo (commit count) and which MRs were opened/merged; the repo, branch, and MR are clickable links into GitLab, and a `GIWA<number>` in a branch name auto-links to the ticket.
 - The default port is 8765; if it's in use, run `./giwa timesheet --port 8790`.
 
 > 🌐 The web page is multi-language: it **auto-detects your browser language** and defaults to English, with a language switcher button for **EN / 中文 / ES / CA** (English, Chinese, Spanish, Catalan).
