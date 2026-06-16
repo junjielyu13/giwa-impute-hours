@@ -59,8 +59,12 @@ Already implemented:
   Editing the hours flags the block as modified and turns it **blue** (a pending change, not yet pushed); deleting goes through a `confirm()` and is immediate (DELETE `/api/entry` → `DELETE /time_entries/:id`, then reload).
   On "Submit to GIWA": new (orange) blocks are created via POST `/time_entries.json` (activity fixed at `activity_id=17` Others, empty comment auto-fills "tracker #id: subject"),
   and edited (blue) blocks are pushed via POST `/api/entry` → `PUT /time_entries/:id`; a clean run reloads so blue reverts to grey and new blocks get ids.
-  The "Submit to GIWA" button is disabled unless there's something to push — a new block or an edited (blue) one.
-  Client state: `blocks` = new blocks, `logged` = the editable working copy of recorded entries (built by `buildLogged()` on each load).
+  The "Submit to GIWA" button is disabled unless there's something to push — a new block or an edited (blue) one — and is also disabled while a week is loading.
+  A **live timer** bar sits under the header: pick a task and hit Start to clock in (a ticking ▶ HH:MM:SS shows, dropdown locks); Stop drops a new (orange) block on today's column
+  spanning the wall-clock start→stop (snapped to 15 min, clamped to 07:00–22:00), to submit like any other. The running timer is persisted in `localStorage` (`giwa_timer`) so a reload resumes it;
+  if Stop happens while viewing another week, it jumps to this week and flushes the block there (`pendingTimerBlock`).
+  Client state: `blocks` = new blocks, `logged` = the editable working copy of recorded entries (built by `buildLogged()` on each load), `timer` = the running stopwatch.
+  The task dropdown markup is shared by the popup and the timer via `taskGroupsHtml()`.
   Note: Redmine time entries only store date + hours, not a point in time; the time axis is just for intuitive layout.
   Optional daily "target hours": fillable in the header; the total shows "logged/target" and changes background color by attainment (green/orange/red) — a reminder only, not enforced;
   targets are stored per specific date in browser localStorage (key = date), independent per week and not shared.

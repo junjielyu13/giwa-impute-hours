@@ -143,7 +143,19 @@ def main():
         page.screenshot(path=str(out), full_page=True)
         print(f"screenshot written: {out.relative_to(ROOT)}")
 
-        # 4) A logged (grey) block can be resized to edit its hours → turns blue (modified), no confirm
+        # 4) Live timer: pick a task, Start → running (dropdown locked, ▶ status), Stop → drops a new block today
+        n_new = page.locator(".grid .block:not(.preview):not(.locked)").count()
+        page.select_option("#timerTask", "101")
+        page.click("#timerBtn")
+        expect(page.locator("#timerBtn")).to_have_text("Stop")
+        expect(page.locator("#timerTask")).to_be_disabled()
+        assert "▶" in page.locator("#timerStatus").inner_text(), "running timer should show a ▶ status"
+        page.click("#timerBtn")   # Stop
+        expect(page.locator("#timerBtn")).to_have_text("Start")
+        if datetime.date.today().isoformat() in DAYS:   # today is a weekday in the shown week
+            assert page.locator(".grid .block:not(.preview):not(.locked)").count() == n_new + 1, "Stop should add a block for today"
+
+        # 5) A logged (grey) block can be resized to edit its hours → turns blue (modified), no confirm
         blk = page.locator(".grid .block.locked").first
         bb = blk.bounding_box()
         page.mouse.move(bb["x"] + bb["width"] / 2, bb["y"] + bb["height"] - 3)  # grab the bottom resize edge
@@ -153,14 +165,14 @@ def main():
         expect(page.locator(".grid .block.locked.modified")).to_have_count(1)
         expect(page.locator("#submitBtn")).to_be_enabled()
 
-        # 5) The × on a logged block deletes it (with a confirm prompt) → DELETE /api/entry
+        # 6) The × on a logged block deletes it (with a confirm prompt) → DELETE /api/entry
         dialogs = []
         page.on("dialog", lambda d: (dialogs.append(d.message), d.accept()))
         page.locator(".grid .block.locked .x").first.click()
         page.wait_for_timeout(200)
         assert dialogs, "delete should pop a confirm() dialog"
 
-        # 6) Language switch works (do this after the screenshot so the image stays English)
+        # 7) Language switch works (do this after the screenshot so the image stays English)
         page.select_option("#langSel", "zh")
         expect(page.locator("#title")).to_have_text("GIWA 工时日历")
         page.select_option("#langSel", "es")

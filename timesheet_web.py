@@ -411,6 +411,14 @@ HTML_PAGE = r'''<!DOCTYPE html>
   .weeknav button { background:#f0f1f3; border:0; border-radius:6px; padding:6px 12px; cursor:pointer; font-size:14px; }
   .weeknav button:hover { background:#e4e6e9; }
   .langsel { margin-left:10px; background:#f0f1f3; border:0; border-radius:6px; padding:6px 8px; cursor:pointer; font-size:13px; color:#333; }
+  #timerbar { display:flex; align-items:center; gap:10px; padding:8px 20px; border-bottom:1px solid var(--line); background:#fafbfc; }
+  #timerbar .tb-label { font-weight:600; font-size:13px; color:#555; white-space:nowrap; }
+  #timerbar select { flex:0 1 460px; min-width:160px; padding:6px 8px; border:1px solid var(--line); border-radius:6px; font-size:13px; background:#fff; }
+  #timerbar select:disabled { background:#f2f3f5; color:#888; }
+  #timerbar .btn { padding:6px 16px; font-size:13px; }
+  #timerbar .tb-status { font-variant-numeric:tabular-nums; font-size:14px; color:var(--accent); font-weight:600; white-space:nowrap; }
+  .btn-stop { background:#d9472b; color:#fff; }
+  .btn-stop:hover { background:#c33d22; }
   #content { position:relative; }
   #calLoading { display:none; position:absolute; inset:0; background:rgba(255,255,255,.72); z-index:40; flex-direction:column; align-items:center; justify-content:center; gap:14px; }
   #calLoading.on { display:flex; }
@@ -500,6 +508,12 @@ HTML_PAGE = r'''<!DOCTYPE html>
     <option value="ca">Català</option>
   </select>
 </header>
+<div id="timerbar">
+  <span class="tb-label" data-i18n="timerLabel">⏱ Live timer</span>
+  <select id="timerTask"></select>
+  <button id="timerBtn" class="btn btn-primary" onclick="toggleTimer()" data-i18n="timerStart">Start</button>
+  <span id="timerStatus" class="tb-status"></span>
+</div>
 <div id="content">
 <div id="cal" class="cal"></div>
 <div id="bottom">
@@ -545,6 +559,7 @@ const I18N = {
     gitlabTitle: "📦 This week's GitLab activity",
     footerHint: "Drag the timeline to add a block. Grey blocks = logged hours — resize to edit (turns blue), × to delete.",
     submit: "Submit to GIWA", submitting: "Submitting…",
+    timerLabel: "⏱ Live timer", timerStart: "Start", timerStop: "Stop",
     popupTitle: "Which task were you working on?",
     commentPlaceholder: "Note (optional; blank = use task title)",
     cancel: "Cancel", add: "Add", del: "Delete",
@@ -583,6 +598,7 @@ const I18N = {
     gitlabTitle: "📦 本周 GitLab 活动",
     footerHint: "在时间轴上拖动＝新建时间块。灰色块＝已记录工时：上下拉伸可改时长（变蓝），× 可删除。",
     submit: "提交到 GIWA", submitting: "提交中…",
+    timerLabel: "⏱ 实时计时", timerStart: "开始", timerStop: "结束",
     popupTitle: "这段时间在做哪个任务？",
     commentPlaceholder: "备注（可选，留空自动用任务标题）",
     cancel: "取消", add: "添加", del: "删除",
@@ -621,6 +637,7 @@ const I18N = {
     gitlabTitle: "📦 Actividad GitLab de esta semana",
     footerHint: "Arrastra la línea de tiempo para añadir un bloque. Bloques grises = horas registradas: redimensiona para editar (se vuelve azul), × para eliminar.",
     submit: "Enviar a GIWA", submitting: "Enviando…",
+    timerLabel: "⏱ Cronómetro", timerStart: "Iniciar", timerStop: "Parar",
     popupTitle: "¿En qué tarea trabajabas?",
     commentPlaceholder: "Nota (opcional; vacío = título de la tarea)",
     cancel: "Cancelar", add: "Añadir", del: "Eliminar",
@@ -659,6 +676,7 @@ const I18N = {
     gitlabTitle: "📦 Activitat GitLab d'aquesta setmana",
     footerHint: "Arrossega la línia de temps per afegir un bloc. Blocs grisos = hores registrades: redimensiona per editar (es torna blau), × per eliminar.",
     submit: "Envia a GIWA", submitting: "Enviant…",
+    timerLabel: "⏱ Cronòmetre", timerStart: "Inicia", timerStop: "Atura",
     popupTitle: "En quina tasca treballaves?",
     commentPlaceholder: "Nota (opcional; buit = títol de la tasca)",
     cancel: "Cancel·la", add: "Afegeix", del: "Elimina",
@@ -735,6 +753,8 @@ let pending = null;       // pending block range awaiting confirmation
 // Resizing changes the duration (=hours) and flags `modified` (shown blue, pushed via PUT on submit); delete is immediate.
 let logged = [];
 let leidSeq = 1;
+// Live timer: {id, label, subject, projcode, startMs} while running (also persisted in localStorage so a reload resumes it).
+let timer = null, timerInt = null, pendingTimerBlock = null;
 
 const fmt = m => String(Math.floor(m/60)).padStart(2,'0') + ':' + String(m%60).padStart(2,'0');
 const minToY = m => (m - START_H*60) / 60 * PXH;
@@ -774,10 +794,15 @@ async function load() {
     if (DATA.error) { document.getElementById('weekLabel').textContent = T.errPrefix + DATA.error; return; }
     blocks = [];
     buildLogged();
+    restoreTimer();
     document.getElementById('result').innerHTML = '';
     render();
     renderGitlab();
     renderStats();
+    // A timer stopped on a day outside the previously-shown week is flushed once that week is loaded.
+    if (pendingTimerBlock && DATA.days.some(d => d.date === pendingTimerBlock.date)) {
+      blocks.push(pendingTimerBlock); pendingTimerBlock = null; renderBlocks(); recalc();
+    }
   } finally {
     ld.classList.remove('on');
   }
@@ -866,6 +891,14 @@ function render() {
   renderLogged();
   renderBlocks();
   recalc();
+  // Refresh the live-timer dropdown for this week's task list, then reflect any running state.
+  const tt = document.getElementById('timerTask');
+  if (tt) {
+    const keep = tt.value;
+    tt.innerHTML = `<option value="">${T.chooseTask}</option>` + taskGroupsHtml();
+    if (keep) tt.value = keep;
+  }
+  renderTimer();
 }
 
 // Turn the server's already-logged entries into an editable working copy, stacked from 08:00 downward.
@@ -977,14 +1010,12 @@ function positionBlock(el, s, e) {
   el.style.height = Math.max(minToY(e) - minToY(s), 2) + 'px';
 }
 
-function openPopup(ev) {
-  const sel = document.getElementById('popupTask');
-  // Group by project (optgroup); projects sorted by task count desc; within a group meetings first, the rest by id newest→oldest
+// The grouped <optgroup> task options (gitlab → this week → by project), shared by the popup and the timer.
+function taskGroupsHtml() {
   const byProj = {};
   DATA.all_tasks.forEach(t => { (byProj[t.project] = byProj[t.project] || []).push(t); });
   const projNames = Object.keys(byProj).sort((a, b) => byProj[b].length - byProj[a].length || a.localeCompare(b));
-  let opts = `<option value="">${T.chooseTask}</option>`;
-  opts += `<option value="__manual__">${T.manualOption}</option>`;
+  let opts = '';
   // gitlab: GIWA tasks linked to this week's PRs/branches, pinned at the top
   if (DATA.gitlab_tasks && DATA.gitlab_tasks.length) {
     opts += `<optgroup label="${T.grpGitlab}">`;
@@ -997,13 +1028,25 @@ function openPopup(ev) {
     DATA.recent.forEach(t => { opts += `<option value="${t.id}">[${t.tracker||'—'}] #${t.id} · ${(t.label||t.subject).slice(0,42)} · ${t.projcode}</option>`; });
     opts += '</optgroup>';
   }
+  // By project; projects sorted by task count desc; within a group meetings first, the rest by id newest→oldest
   projNames.forEach(p => {
     const items = byProj[p].sort((a, b) => (a.label ? 0 : 1) - (b.label ? 0 : 1) || b.id - a.id);
     opts += `<optgroup label="${p}">`;
     items.forEach(t => { opts += `<option value="${t.id}">[${t.tracker||'—'}] #${t.id} · ${(t.label || t.subject).slice(0,50)}</option>`; });
     opts += '</optgroup>';
   });
-  sel.innerHTML = opts;
+  return opts;
+}
+// Find a task across all the lists we know about.
+function findTask(id) {
+  return (DATA.all_tasks || []).find(x => x.id === id) ||
+         (DATA.recent || []).find(x => x.id === id) ||
+         (DATA.gitlab_tasks || []).find(x => x.id === id) || null;
+}
+
+function openPopup(ev) {
+  const sel = document.getElementById('popupTask');
+  sel.innerHTML = `<option value="">${T.chooseTask}</option><option value="__manual__">${T.manualOption}</option>` + taskGroupsHtml();
   document.getElementById('popupComment').value = '';
   const mid = document.getElementById('popupManualId');
   mid.value = ''; mid.style.display = 'none';
@@ -1025,6 +1068,65 @@ function closePopup() {
 function showMsg(text, ok) {
   const box = document.getElementById('result');
   box.innerHTML = `<div class="msg ${ok ? 'ok' : 'err'}">${text}</div>`;
+}
+
+// ---------- Live timer (header bar): pick a task, Start to clock in, Stop to drop a new block ----------
+const pad2 = n => String(n).padStart(2, '0');
+const localDate = d => `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+const clampSnap = m => Math.max(START_H*60, Math.min(END_H*60, Math.round(m/SNAP)*SNAP));
+
+function restoreTimer() {
+  try { const s = JSON.parse(localStorage.getItem('giwa_timer')); timer = (s && s.startMs) ? s : null; }
+  catch (e) { timer = null; }
+}
+function renderTimer() {
+  const btn = document.getElementById('timerBtn'), st = document.getElementById('timerStatus'), sel = document.getElementById('timerTask');
+  if (!btn) return;
+  if (timer) {
+    btn.textContent = T.timerStop; btn.classList.remove('btn-primary'); btn.classList.add('btn-stop');
+    if (sel) { sel.value = String(timer.id); sel.disabled = true; }
+    if (!timerInt) timerInt = setInterval(tickTimer, 1000);
+    tickTimer();
+  } else {
+    btn.textContent = T.timerStart; btn.classList.add('btn-primary'); btn.classList.remove('btn-stop');
+    if (sel) sel.disabled = false;
+    if (st) st.textContent = '';
+    if (timerInt) { clearInterval(timerInt); timerInt = null; }
+  }
+}
+function tickTimer() {
+  if (!timer) return;
+  const sec = Math.max(0, Math.floor((Date.now() - timer.startMs) / 1000));
+  const clock = `${pad2(Math.floor(sec/3600))}:${pad2(Math.floor(sec%3600/60))}:${pad2(sec%60)}`;
+  const st = document.getElementById('timerStatus');
+  if (st) st.textContent = `▶ #${timer.id} ${(timer.label || timer.subject || '').slice(0,28)} · ${clock}`;
+}
+function toggleTimer() { timer ? stopTimer() : startTimer(); }
+function startTimer() {
+  const id = parseInt(document.getElementById('timerTask').value, 10);
+  if (!id) { alert(T.alertChooseTask); return; }
+  const t = findTask(id);
+  timer = { id, label: t ? (t.label || t.subject) : '', subject: t ? t.subject : '', projcode: t ? t.projcode : '?', startMs: Date.now() };
+  localStorage.setItem('giwa_timer', JSON.stringify(timer));
+  renderTimer();
+}
+function stopTimer() {
+  const tm = timer; timer = null;
+  localStorage.removeItem('giwa_timer');
+  renderTimer();
+  if (!tm) return;
+  const start = new Date(tm.startMs), end = new Date();
+  const date = localDate(start);
+  let s = clampSnap(start.getHours()*60 + start.getMinutes());
+  let e = clampSnap(end.getHours()*60 + end.getMinutes());
+  if (e <= s) e = Math.min(END_H*60, s + SNAP);   // ensure at least one snap of duration
+  const blk = { bid: bidSeq++, issue_id: tm.id, subject: tm.label || tm.subject || '', projcode: tm.projcode || '?', date, s, e, comment: '' };
+  if (DATA && DATA.days.some(d => d.date === date)) {
+    blocks.push(blk); renderBlocks(); recalc();
+  } else {
+    // The timed day isn't in the current view (user navigated away) → jump to its week and flush there.
+    pendingTimerBlock = blk; weekOffset = 0; load();
+  }
 }
 // Show the manual GIWA-ID input when "Enter a GIWA ID manually" is chosen
 function onTaskSelChange() {
