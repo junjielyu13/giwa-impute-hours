@@ -765,6 +765,8 @@ function setTarget(date, val) { const h = parseHM(val); if (h == null || isNaN(h
 async function load() {
   const ld = document.getElementById('calLoading');
   ld.classList.add('on');
+  // Disable submit while the page is loading; recalc() re-evaluates it once data is rendered.
+  const sb = document.getElementById('submitBtn'); if (sb) sb.disabled = true;
   document.getElementById('weekLabel').textContent = T.loading;
   try {
     const r = await fetch('/api/init?week=' + weekOffset);
