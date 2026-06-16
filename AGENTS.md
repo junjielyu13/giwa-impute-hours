@@ -53,8 +53,14 @@ Already implemented:
 - `mine` — open issues assigned to me; exports a linked `MINE.md` and opens it automatically in VS Code
 - `timesheet [--port N]` — start a local web page · **calendar week view** for logging time (implemented in `timesheet_web.py`).
   Columns = Monday–Friday, vertical axis = time; drag a block to create a time entry, release to pick a task, the block's duration converts to hours.
-  Gray cards at the top = already-recorded time entries (read from `/time_entries.json` `from`/`to`, not editable, prevents duplicate submission).
-  Submission goes through POST `/time_entries.json`, the activity is fixed at `activity_id=17` Others, and an empty comment auto-fills with "tracker #id: subject".
+  Grey blocks = already-recorded time entries (read from `/time_entries.json` `from`/`to`), drawn on the grid stacked from 08:00 downward.
+  They are kept un-aggregated so each carries its own `time_entry` id; Redmine stores only date+hours, so the 08:00 start is just for layout (order is arbitrary).
+  Grey blocks are interactive just like new blocks: drag to move, **resize the top/bottom edge to change the hours** (no confirm), and an × to delete.
+  Editing the hours flags the block as modified and turns it **blue** (a pending change, not yet pushed); deleting goes through a `confirm()` and is immediate (DELETE `/api/entry` → `DELETE /time_entries/:id`, then reload).
+  On "Submit to GIWA": new (orange) blocks are created via POST `/time_entries.json` (activity fixed at `activity_id=17` Others, empty comment auto-fills "tracker #id: subject"),
+  and edited (blue) blocks are pushed via POST `/api/entry` → `PUT /time_entries/:id`; a clean run reloads so blue reverts to grey and new blocks get ids.
+  The "Submit to GIWA" button is disabled unless there's something to push — a new block or an edited (blue) one.
+  Client state: `blocks` = new blocks, `logged` = the editable working copy of recorded entries (built by `buildLogged()` on each load).
   Note: Redmine time entries only store date + hours, not a point in time; the time axis is just for intuitive layout.
   Optional daily "target hours": fillable in the header; the total shows "logged/target" and changes background color by attainment (green/orange/red) — a reminder only, not enforced;
   targets are stored per specific date in browser localStorage (key = date), independent per week and not shared.
@@ -81,7 +87,7 @@ Planned: `show #ID` (issue details + comments), `project NAME`, `due` (sorted by
 
 ## Tests
 
-`tests/test_timesheet.py` is a Playwright test for the web UI. It mocks every `/api/*` response (no Redmine server / API key needed) by route-interception, asserts the main behaviours (render, drag-to-create + popup, manual GIWA-ID option, GitLab links, language switcher), and regenerates `docs/timesheet.png` (the README screenshot) against mock data. Playwright is a dev-only dependency (`pip install playwright && playwright install chromium`); the tool itself stays zero-dependency. Keep the screenshot's data fake — never point it at the real instance, since the repo is public.
+`tests/test_timesheet.py` is a Playwright test for the web UI. It mocks every `/api/*` response (no Redmine server / API key needed) by route-interception, asserts the main behaviours (render, drag-to-create + popup, manual GIWA-ID option, submit-button disabled when nothing to push, resize-a-logged-block-to-edit (turns blue) + ×-to-delete with confirm, GitLab links, language switcher), and regenerates `docs/timesheet.png` (the README screenshot) against mock data. Playwright is a dev-only dependency (`pip install playwright && playwright install chromium`); the tool itself stays zero-dependency. Keep the screenshot's data fake — never point it at the real instance, since the repo is public.
 
 ## Redmine API quick reference
 

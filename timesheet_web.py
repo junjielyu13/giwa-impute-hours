@@ -34,7 +34,7 @@ def _week_dates(week_offset=0):
 
 
 def serve(url, key, api_get, api_post, port=8765, extra_ids=None,
-          gitlab_url="", gitlab_token="", gitlab_get=None):
+          gitlab_url="", gitlab_token="", gitlab_get=None, api_put=None, api_delete=None):
     extra_ids = extra_ids or []
     proj_cache = {}
 
@@ -172,23 +172,25 @@ def serve(url, key, api_get, api_post, port=8765, extra_ids=None,
             pass
 
         start, end = days[0].isoformat(), days[4].isoformat()
+        # Keep each time entry individual (not aggregated) so it carries its own id —
+        # the id is required to edit (PUT) or delete (DELETE) the entry later.
         existing = []
         try:
             te = api_get(url, key, f"/time_entries.json?user_id=me&from={start}&to={end}&limit=100")
-            agg = {}
             for t in te.get("time_entries", []):
                 iss = (t.get("issue") or {}).get("id")
                 if not iss:
                     continue
-                agg[(iss, t["spent_on"])] = round(agg.get((iss, t["spent_on"]), 0) + t["hours"], 2)
-            for (iss, date), hrs in agg.items():
                 subj = subj_of.get(iss)
                 if subj is None:
                     try:
                         subj = api_get(url, key, f"/issues/{iss}.json")["issue"]["subject"]
+                        subj_of[iss] = subj
                     except Exception:
                         subj = ""
-                existing.append({"issue_id": iss, "date": date, "hours": hrs, "subject": subj})
+                existing.append({"id": t["id"], "issue_id": iss, "date": t["spent_on"],
+                                 "hours": round(t["hours"], 2), "subject": subj,
+                                 "comment": t.get("comments") or ""})
         except Exception:
             pass
 
@@ -272,6 +274,23 @@ def serve(url, key, api_get, api_post, port=8765, extra_ids=None,
                 results.append({"issue_id": iid, "date": date, "hours": hours, "ok": False, "error": str(ex)})
         return results
 
+    def update_entry(eid, hours, comment):
+        """Edit an already-logged time entry (hours and/or comment)."""
+        if api_put is None:
+            raise RuntimeError("editing not available")
+        te = {"hours": round(float(hours), 2)}
+        if comment is not None:
+            te["comments"] = comment
+        api_put(url, key, f"/time_entries/{int(eid)}.json", {"time_entry": te})
+        return {"ok": True, "id": int(eid)}
+
+    def delete_entry(eid):
+        """Delete an already-logged time entry."""
+        if api_delete is None:
+            raise RuntimeError("delete not available")
+        api_delete(url, key, f"/time_entries/{int(eid)}.json")
+        return {"ok": True, "id": int(eid)}
+
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -320,9 +339,28 @@ def serve(url, key, api_get, api_post, port=8765, extra_ids=None,
                     self._send(200, json.dumps(submit(body.get("entries", []))))
                 except Exception as e:
                     self._send(500, json.dumps({"error": str(e)}))
+            elif self.path == "/api/entry":   # edit an already-logged entry
+                n = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(n) or b"{}")
+                try:
+                    self._send(200, json.dumps(update_entry(
+                        body["id"], body["hours"], body.get("comment"))))
+                except Exception as e:
+                    self._send(500, json.dumps({"error": str(e)}))
             elif self.path == "/api/close":
                 self._send(200, "{}")
                 threading.Thread(target=srv.shutdown, daemon=True).start()
+            else:
+                self._send(404, "not found", "text/plain")
+
+        def do_DELETE(self):
+            p = urllib.parse.urlparse(self.path)
+            if p.path == "/api/entry":
+                q = urllib.parse.parse_qs(p.query)
+                try:
+                    self._send(200, json.dumps(delete_entry(int(q.get("id", ["0"])[0]))))
+                except Exception as e:
+                    self._send(500, json.dumps({"error": str(e)}))
             else:
                 self._send(404, "not found", "text/plain")
 
@@ -391,8 +429,6 @@ HTML_PAGE = r'''<!DOCTYPE html>
   .dayhead .target { width:88px; margin-top:4px; border:1px solid var(--line); border-radius:5px; padding:3px 4px; font-size:11px; text-align:center; color:#555; }
   .dayhead .target::placeholder { color:#bfc4cb; }
   /* all-day (already-logged) row */
-  .allday { border-bottom:1px solid var(--line); min-height:26px; padding:3px; border-left:1px solid var(--line); }
-  .allday .chip { background:#eef0f2; color:#6b7178; border-radius:4px; font-size:11px; padding:2px 5px; margin:2px 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; border-left:3px solid var(--locked); }
   .gutlabel { font-size:11px; color:#9aa0a8; text-align:right; padding-right:6px; transform:translateY(-7px); }
   .grid { position:relative; border-left:1px solid var(--line); cursor:crosshair; }
   .hourline { position:absolute; left:0; right:0; border-top:1px solid #f0f1f3; }
@@ -405,6 +441,12 @@ HTML_PAGE = r'''<!DOCTYPE html>
   .block .x:hover { opacity:1; }
   .block .dur { font-weight:700; }
   .block.preview { opacity:.55; }
+  /* already-logged blocks: greyed, laid out from 08:00 down; drag to move, resize edges to adjust hours, × to delete */
+  .block.locked { background:#eef0f2; color:#6b7178; border-left:3px solid var(--locked); cursor:move; box-shadow:none; }
+  .block.locked:hover { background:#e7eaee; }
+  /* a logged block whose hours were edited (pending push to GIWA): blue */
+  .block.locked.modified { background:#e7f0ff; color:#1558b0; border-left-color:#1a73e8; }
+  .block.locked.modified:hover { background:#dbe8fd; }
   /* popup */
   #overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.25); z-index:50; }
   #popup { position:fixed; z-index:51; background:#fff; border-radius:10px; box-shadow:0 8px 30px rgba(0,0,0,.25); padding:16px; width:360px; }
@@ -475,7 +517,7 @@ HTML_PAGE = r'''<!DOCTYPE html>
 </div>
 <footer>
   <span class="grand" id="grand"></span>
-  <span class="hint" data-i18n="footerHint">Drag on a day's timeline to create a time block (snaps to 15 min). Grey cards are already-logged hours.</span>
+  <span class="hint" data-i18n="footerHint">Drag the timeline to add a block. Grey blocks = logged hours — resize to edit (turns blue), × to delete.</span>
   <button class="btn btn-submit" id="submitBtn" onclick="submitAll()" data-i18n="submit">Submit to GIWA</button>
 </footer>
 
@@ -501,7 +543,7 @@ const I18N = {
     loading: "Loading…", errPrefix: "Error: ",
     statsTitle: "🧮 This week's hours",
     gitlabTitle: "📦 This week's GitLab activity",
-    footerHint: "Drag on a day's timeline to create a time block (snaps to 15 min). Grey cards are already-logged hours.",
+    footerHint: "Drag the timeline to add a block. Grey blocks = logged hours — resize to edit (turns blue), × to delete.",
     submit: "Submit to GIWA", submitting: "Submitting…",
     popupTitle: "Which task were you working on?",
     commentPlaceholder: "Note (optional; blank = use task title)",
@@ -523,13 +565,15 @@ const I18N = {
     exactlyMet: "Exactly on target",
     dow: ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'],
     weekN: n => `(week ${n})`,
-    logged: (id, h) => `Logged #${id} · ${h}h`,
     statsTotal: (g, n) => `Total ${g} · new ${n}`,
     grandTotal: (g, n) => `Week total ${g} (new ${n})`,
     short: x => `${x} short`, over: x => `${x} over`,
-    confirmSubmit: (count, disp, dec) => `Write ${count} time entries to GIWA, total ${disp} (GIWA records ${dec}h). Submit?`,
+    confirmSubmit: (nNew, nUpd, disp) => `Submit to GIWA: ${nNew} new (total ${disp})${nUpd ? ` + ${nUpd} edited` : ''}. Proceed?`,
     submitFailed: e => `Submit failed: ${e}`,
     submitOk: n => `✓ Submitted ${n} entries; converted to "logged".`,
+    updateOk: n => `✓ Updated ${n} logged ${n === 1 ? 'entry' : 'entries'}.`,
+    confirmDeleteMsg: (id, h) => `Delete the logged entry for #${id} (${h}h) from GIWA? This cannot be undone.`,
+    deleteOk: "✓ Entry deleted from GIWA.", deleteFailed: e => `Delete failed: ${e}`,
   },
   zh: {
     title: "GIWA 工时日历",
@@ -537,7 +581,7 @@ const I18N = {
     loading: "加载中…", errPrefix: "出错: ",
     statsTitle: "🧮 本周工时统计",
     gitlabTitle: "📦 本周 GitLab 活动",
-    footerHint: "在某天时间轴上按住拖动 = 新建时间块（自动按 15 分钟吸附）。灰色卡片是已记录的工时。",
+    footerHint: "在时间轴上拖动＝新建时间块。灰色块＝已记录工时：上下拉伸可改时长（变蓝），× 可删除。",
     submit: "提交到 GIWA", submitting: "提交中…",
     popupTitle: "这段时间在做哪个任务？",
     commentPlaceholder: "备注（可选，留空自动用任务标题）",
@@ -559,13 +603,15 @@ const I18N = {
     exactlyMet: "正好达标",
     dow: ['周日','周一','周二','周三','周四','周五','周六'],
     weekN: n => `（第 ${n} 周）`,
-    logged: (id, h) => `已记 #${id} · ${h}h`,
     statsTotal: (g, n) => `合计 ${g}　·　新增 ${n}`,
     grandTotal: (g, n) => `本周合计 ${g}（新增 ${n}）`,
     short: x => `还差 ${x}`, over: x => `超出 ${x}`,
-    confirmSubmit: (count, disp, dec) => `将向 GIWA 写入 ${count} 条工时，合计 ${disp}（GIWA 记 ${dec}h）。确认提交？`,
+    confirmSubmit: (nNew, nUpd, disp) => `提交到 GIWA：新增 ${nNew} 条（合计 ${disp}）${nUpd ? `，修改 ${nUpd} 条` : ''}。确认？`,
     submitFailed: e => `提交失败: ${e}`,
     submitOk: n => `✓ 成功提交 ${n} 条工时，已转为「已记录」。`,
+    updateOk: n => `✓ 已更新 ${n} 条已记录工时。`,
+    confirmDeleteMsg: (id, h) => `从 GIWA 删除 #${id} 的这条已记录工时（${h}h）？此操作不可撤销。`,
+    deleteOk: "✓ 已从 GIWA 删除。", deleteFailed: e => `删除失败: ${e}`,
   },
   es: {
     title: "Calendario de horas GIWA",
@@ -573,7 +619,7 @@ const I18N = {
     loading: "Cargando…", errPrefix: "Error: ",
     statsTitle: "🧮 Horas de esta semana",
     gitlabTitle: "📦 Actividad GitLab de esta semana",
-    footerHint: "Arrastra en la línea de tiempo de un día para crear un bloque (ajuste de 15 min). Las tarjetas grises son horas ya registradas.",
+    footerHint: "Arrastra la línea de tiempo para añadir un bloque. Bloques grises = horas registradas: redimensiona para editar (se vuelve azul), × para eliminar.",
     submit: "Enviar a GIWA", submitting: "Enviando…",
     popupTitle: "¿En qué tarea trabajabas?",
     commentPlaceholder: "Nota (opcional; vacío = título de la tarea)",
@@ -595,13 +641,15 @@ const I18N = {
     exactlyMet: "Justo en el objetivo",
     dow: ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'],
     weekN: n => `(semana ${n})`,
-    logged: (id, h) => `Registrado #${id} · ${h}h`,
     statsTotal: (g, n) => `Total ${g} · nuevo ${n}`,
     grandTotal: (g, n) => `Total semana ${g} (nuevo ${n})`,
     short: x => `faltan ${x}`, over: x => `${x} de más`,
-    confirmSubmit: (count, disp, dec) => `Se escribirán ${count} entradas de tiempo en GIWA, total ${disp} (GIWA registra ${dec}h). ¿Confirmar?`,
+    confirmSubmit: (nNew, nUpd, disp) => `Enviar a GIWA: ${nNew} nuevas (total ${disp})${nUpd ? ` + ${nUpd} editadas` : ''}. ¿Continuar?`,
     submitFailed: e => `Error al enviar: ${e}`,
     submitOk: n => `✓ Enviadas ${n} entradas; convertidas a "registrado".`,
+    updateOk: n => `✓ Actualizada${n === 1 ? '' : 's'} ${n} entrada${n === 1 ? '' : 's'} registrada${n === 1 ? '' : 's'}.`,
+    confirmDeleteMsg: (id, h) => `¿Eliminar la entrada registrada de #${id} (${h}h) de GIWA? No se puede deshacer.`,
+    deleteOk: "✓ Entrada eliminada de GIWA.", deleteFailed: e => `Error al eliminar: ${e}`,
   },
   ca: {
     title: "Calendari d'hores GIWA",
@@ -609,7 +657,7 @@ const I18N = {
     loading: "Carregant…", errPrefix: "Error: ",
     statsTitle: "🧮 Hores d'aquesta setmana",
     gitlabTitle: "📦 Activitat GitLab d'aquesta setmana",
-    footerHint: "Arrossega a la línia de temps d'un dia per crear un bloc (ajust de 15 min). Les targetes grises són hores ja registrades.",
+    footerHint: "Arrossega la línia de temps per afegir un bloc. Blocs grisos = hores registrades: redimensiona per editar (es torna blau), × per eliminar.",
     submit: "Envia a GIWA", submitting: "Enviant…",
     popupTitle: "En quina tasca treballaves?",
     commentPlaceholder: "Nota (opcional; buit = títol de la tasca)",
@@ -631,13 +679,15 @@ const I18N = {
     exactlyMet: "Just a l'objectiu",
     dow: ['Dg','Dl','Dt','Dc','Dj','Dv','Ds'],
     weekN: n => `(setmana ${n})`,
-    logged: (id, h) => `Registrat #${id} · ${h}h`,
     statsTotal: (g, n) => `Total ${g} · nou ${n}`,
     grandTotal: (g, n) => `Total setmana ${g} (nou ${n})`,
     short: x => `falten ${x}`, over: x => `${x} de més`,
-    confirmSubmit: (count, disp, dec) => `S'escriuran ${count} entrades de temps a GIWA, total ${disp} (GIWA registra ${dec}h). Confirmar?`,
+    confirmSubmit: (nNew, nUpd, disp) => `Envia a GIWA: ${nNew} noves (total ${disp})${nUpd ? ` + ${nUpd} editades` : ''}. Continuar?`,
     submitFailed: e => `Error en enviar: ${e}`,
     submitOk: n => `✓ Enviades ${n} entrades; convertides a "registrat".`,
+    updateOk: n => `✓ Actualitzada${n === 1 ? '' : 'es'} ${n} entrada${n === 1 ? '' : 'es'} registrada${n === 1 ? '' : 'es'}.`,
+    confirmDeleteMsg: (id, h) => `Eliminar l'entrada registrada de #${id} (${h}h) de GIWA? No es pot desfer.`,
+    deleteOk: "✓ Entrada eliminada de GIWA.", deleteFailed: e => `Error en eliminar: ${e}`,
   },
 };
 function detectLang() {
@@ -681,6 +731,10 @@ let blocks = [];          // new blocks {bid, issue_id, subject, date, s, e, com
 let bidSeq = 1;
 let drag = null;          // {date, col, s, e, el}
 let pending = null;       // pending block range awaiting confirmation
+// Already-logged entries as an editable working copy {leid, id, issue_id, subject, projcode, date, s, e, origHours, comment, modified}.
+// Resizing changes the duration (=hours) and flags `modified` (shown blue, pushed via PUT on submit); delete is immediate.
+let logged = [];
+let leidSeq = 1;
 
 const fmt = m => String(Math.floor(m/60)).padStart(2,'0') + ':' + String(m%60).padStart(2,'0');
 const minToY = m => (m - START_H*60) / 60 * PXH;
@@ -717,6 +771,7 @@ async function load() {
     DATA = await r.json();
     if (DATA.error) { document.getElementById('weekLabel').textContent = T.errPrefix + DATA.error; return; }
     blocks = [];
+    buildLogged();
     document.getElementById('result').innerHTML = '';
     render();
     renderGitlab();
@@ -734,14 +789,14 @@ function renderStats() {
   const body = document.getElementById('statsBody'); if (!body) return;
   let grand = 0, newTot = 0, rows = '';
   DATA.days.forEach(d => {
-    const ex = DATA.existing.filter(e => e.date === d.date).reduce((s,e)=>s+e.hours,0);
+    const ex = logged.filter(e => e.date === d.date).reduce((s,l)=>s+(l.e-l.s)/60,0);
     const nw = blocks.filter(b => b.date === d.date).reduce((s,b)=>s+(b.e-b.s)/60,0);
     const tot = ex + nw; grand += tot; newTot += nw;
     const tg = TARGETS[d.date];
     rows += `<div class="st-row"><span>${dowName(d.date)} ${d.date.slice(8)}</span><span>${tot?fmtDot(tot):'—'}${tg!=null?' / '+fmtDot(tg):''}</span></div>`;
   });
   const proj = {};
-  DATA.existing.forEach(e => { const k = e.projcode||'?'; proj[k] = (proj[k]||0) + e.hours; });
+  logged.forEach(l => { const k = l.projcode||'?'; proj[k] = (proj[k]||0) + (l.e-l.s)/60; });
   blocks.forEach(b => { const k = b.projcode||'?'; proj[k] = (proj[k]||0) + (b.e-b.s)/60; });
   const prows = Object.keys(proj).sort((a,b)=>proj[b]-proj[a])
     .map(k => `<div class="st-row"><span>${k}</span><span>${fmtDot(proj[k])}</span></div>`).join('') || '<div class="st-row"><span>—</span><span></span></div>';
@@ -786,13 +841,7 @@ function render() {
             `<div class="tot" id="tot-${d.date}"></div>` +
             `<input class="target" id="tg-${d.date}" placeholder="${T.targetPlaceholder}" title="${T.targetTitle}" onchange="setTarget('${d.date}', this.value)"></div>`;
   });
-  // Already-logged (all-day row)
-  html += '<div class="allday" style="border-left:0"></div>';
-  DATA.days.forEach(d => {
-    const exs = DATA.existing.filter(e => e.date === d.date);
-    let chips = exs.map(e => `<div class="chip" title="#${e.issue_id} ${e.subject}">${T.logged(e.issue_id, e.hours)}</div>`).join('');
-    html += `<div class="allday">${chips}</div>`;
-  });
+  // Already-logged hours are drawn as editable blocks on the grid (see renderLogged), not in an all-day row.
   // Time grid
   const gh = TOTAL_MIN/60 * PXH;
   let gutter = '<div style="position:relative;height:' + gh + 'px">';
@@ -802,7 +851,7 @@ function render() {
   DATA.days.forEach(d => {
     html += `<div class="grid" id="grid-${d.date}" data-date="${d.date}" style="height:${gh}px"></div>`;
   });
-  cal.style.gridTemplateRows = 'auto auto 1fr';
+  cal.style.gridTemplateRows = 'auto 1fr';
   cal.innerHTML = html;
   // Restore saved daily targets
   DATA.days.forEach(d => { const inp = document.getElementById('tg-' + d.date); if (inp && TARGETS[d.date] != null) inp.value = fmtColon(TARGETS[d.date]); });
@@ -812,8 +861,79 @@ function render() {
     for (let h = START_H; h <= END_H; h++) { const l = document.createElement('div'); l.className='hourline'; l.style.top = minToY(h*60)+'px'; g.appendChild(l); }
     g.addEventListener('mousedown', startDrag);
   });
+  renderLogged();
   renderBlocks();
   recalc();
+}
+
+// Turn the server's already-logged entries into an editable working copy, stacked from 08:00 downward.
+// Redmine stores only date + hours (no clock time), so the start time is purely for layout; order is arbitrary.
+function buildLogged() {
+  logged = [];
+  const cursor = {};
+  (DATA.existing || []).forEach(e => {
+    const start = cursor[e.date] == null ? 8 * 60 : cursor[e.date];
+    const dur = Math.round(e.hours * 60);
+    logged.push({ leid: leidSeq++, id: e.id != null ? e.id : null, issue_id: e.issue_id,
+                  subject: e.subject || '', projcode: e.projcode || '?', date: e.date,
+                  s: start, e: start + dur, origHours: e.hours, comment: e.comment || '', modified: false });
+    cursor[e.date] = start + dur;
+  });
+}
+
+// Draw the logged entries. Those with an id are draggable/resizable (adjust hours, no confirm)
+// and have an × to delete (with confirm). A resized entry is flagged `modified` and turns blue.
+function renderLogged() {
+  document.querySelectorAll('.grid .block.locked').forEach(x => x.remove());
+  logged.forEach(l => {
+    const g = document.getElementById('grid-' + l.date);
+    if (!g) return;
+    const el = document.createElement('div');
+    el.className = 'block locked' + (l.modified ? ' modified' : '');
+    positionBlock(el, l.s, l.e);
+    el.title = `#${l.issue_id} ${l.subject || ''}`;
+    const editable = l.id != null;
+    el.innerHTML =
+      (editable ? `<div class="rsz top"></div><span class="x" onclick="deleteLogged(${l.leid})" title="${T.del}">×</span>` : '') +
+      `<span class="dur">${fmtDot((l.e - l.s) / 60)}h</span> 【${l.projcode}】#${l.issue_id}<br>` +
+      `<span style="opacity:.9">${(l.subject || '').slice(0,26)}</span>` +
+      (editable ? `<div class="rsz bot"></div>` : '');
+    if (editable) el.addEventListener('mousedown', e => loggedMouseDown(e, l.leid));
+    else el.style.cursor = 'default';
+    g.appendChild(el);
+  });
+}
+
+// Move / resize a logged block (15-min snap). Resizing changes the hours → flags it modified (blue). No confirm.
+function loggedMouseDown(ev, leid) {
+  if (ev.target.classList.contains('x')) return;
+  ev.stopPropagation(); ev.preventDefault();
+  const l = logged.find(x => x.leid === leid); if (!l) return;
+  const mode = ev.target.classList.contains('rsz') ? (ev.target.classList.contains('top') ? 'top' : 'bot') : 'move';
+  const startY = ev.clientY, s0 = l.s, e0 = l.e, dur = e0 - s0;
+  function mm(e) {
+    const dy = Math.round(((e.clientY - startY) / PXH * 60) / SNAP) * SNAP;
+    if (mode === 'move') { let ns = Math.max(START_H*60, Math.min(s0 + dy, END_H*60 - dur)); l.s = ns; l.e = ns + dur; }
+    else if (mode === 'top') { l.s = Math.max(START_H*60, Math.min(s0 + dy, l.e - SNAP)); }
+    else { l.e = Math.min(END_H*60, Math.max(e0 + dy, l.s + SNAP)); }
+    // Only a duration (=hours) change counts as an edit to push; pure moves don't change anything GIWA stores.
+    l.modified = Math.abs((l.e - l.s) / 60 - l.origHours) > 0.001;
+    renderLogged(); recalc();
+  }
+  function mu() { document.removeEventListener('mousemove', mm); document.removeEventListener('mouseup', mu); }
+  document.addEventListener('mousemove', mm); document.addEventListener('mouseup', mu);
+}
+
+async function deleteLogged(leid) {
+  const l = logged.find(x => x.leid === leid); if (!l) return;
+  if (!confirm(T.confirmDeleteMsg(l.issue_id, fmtDot(l.origHours)))) return;
+  try {
+    const r = await fetch('/api/entry?id=' + l.id, { method: 'DELETE' });
+    const d = await r.json();
+    if (!r.ok || d.error) { alert(T.deleteFailed(d.error || r.status)); return; }
+  } catch (ex) { alert(T.deleteFailed(ex)); return; }
+  showMsg(T.deleteOk, true);
+  load();
 }
 
 function startDrag(ev) {
@@ -899,6 +1019,11 @@ function closePopup() {
   document.getElementById('popup').style.display = 'none';
   pending = null;
 }
+
+function showMsg(text, ok) {
+  const box = document.getElementById('result');
+  box.innerHTML = `<div class="msg ${ok ? 'ok' : 'err'}">${text}</div>`;
+}
 // Show the manual GIWA-ID input when "Enter a GIWA ID manually" is chosen
 function onTaskSelChange() {
   const manual = document.getElementById('popupTask').value === '__manual__';
@@ -933,7 +1058,7 @@ async function confirmBlock() {
 }
 
 function renderBlocks() {
-  document.querySelectorAll('.grid .block:not(.preview)').forEach(x => x.remove());
+  document.querySelectorAll('.grid .block:not(.preview):not(.locked)').forEach(x => x.remove());
   blocks.forEach(b => {
     const g = document.getElementById('grid-' + b.date);
     if (!g) return;
@@ -970,7 +1095,7 @@ function blockMouseDown(ev, bid) {
 function recalc() {
   let grand = 0;
   DATA.days.forEach(d => {
-    const ex = DATA.existing.filter(e => e.date === d.date).reduce((s,e)=>s+e.hours,0);
+    const ex = logged.filter(e => e.date === d.date).reduce((s,l)=>s+(l.e-l.s)/60,0);
     const nw = blocks.filter(b => b.date === d.date).reduce((s,b)=>s+(b.e-b.s)/60,0);
     const tot = ex + nw;
     grand += tot;
@@ -995,33 +1120,56 @@ function recalc() {
   });
   const newTot = blocks.reduce((s,b)=>s+(b.e-b.s)/60,0);
   document.getElementById('grand').textContent = T.grandTotal(fmtDot(grand), fmtDot(newTot));
+  // Disabled unless there's something to push: a new block or an edited (blue) logged block.
+  const btn = document.getElementById('submitBtn');
+  if (btn) btn.disabled = blocks.length === 0 && !logged.some(l => l.modified);
   renderStats();
 }
 
 async function submitAll() {
-  if (!blocks.length) { alert(T.alertNoBlocks); return; }
   const entries = blocks.map(b => ({ issue_id: b.issue_id, date: b.date, hours: decH((b.e-b.s)/60), comment: b.comment }));
+  const mods = logged.filter(l => l.modified);
+  if (!entries.length && !mods.length) { alert(T.alertNoBlocks); return; }
   const total = entries.reduce((s,e)=>s+e.hours,0);
-  if (!confirm(T.confirmSubmit(entries.length, fmtDot(total), total.toFixed(2)))) return;
+  if (!confirm(T.confirmSubmit(entries.length, mods.length, fmtDot(total)))) return;
   const btn = document.getElementById('submitBtn');
   btn.disabled = true; btn.textContent = T.submitting;
-  const r = await fetch('/api/submit', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ entries }) });
-  const res = await r.json();
   const box = document.getElementById('result');
   box.innerHTML = '';
-  if (res.error) box.innerHTML = `<div class="msg err">${T.submitFailed(res.error)}</div>`;
-  else {
-    const ok = res.filter(x=>x.ok), bad = res.filter(x=>!x.ok);
-    if (ok.length) box.innerHTML += `<div class="msg ok">${T.submitOk(ok.length)}</div>`;
-    bad.forEach(b => box.innerHTML += `<div class="msg err">✗ #${b.issue_id} ${b.date} ${b.hours}h — ${b.error}</div>`);
-    // Move successful ones into existing (grey cards) and remove them from the new blocks
-    ok.forEach(e => {
-      DATA.existing.push({ issue_id:e.issue_id, date:e.date, hours:e.hours, subject:(DATA.all_tasks.find(t=>t.id===e.issue_id)||{}).subject||'' });
-      blocks = blocks.filter(b => !(b.issue_id===e.issue_id && b.date===e.date && Math.abs((b.e-b.s)/60 - e.hours) < 0.001));
-    });
-    render();
+  let failed = false;
+
+  // 1) Push edited logged blocks (PUT via /api/entry).
+  let updated = 0;
+  for (const m of mods) {
+    try {
+      const r = await fetch('/api/entry', { method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ id: m.id, hours: decH((m.e-m.s)/60), comment: m.comment }) });
+      const d = await r.json();
+      if (!r.ok || d.error) { failed = true; box.innerHTML += `<div class="msg err">✗ #${m.issue_id} ${m.date} — ${d.error||r.status}</div>`; }
+      else updated++;
+    } catch (ex) { failed = true; box.innerHTML += `<div class="msg err">✗ #${m.issue_id} ${m.date} — ${ex}</div>`; }
   }
+  if (updated) box.innerHTML += `<div class="msg ok">${T.updateOk(updated)}</div>`;
+
+  // 2) Create new blocks (POST /api/submit).
+  let bad = [];
+  if (entries.length) {
+    const r = await fetch('/api/submit', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ entries }) });
+    const res = await r.json();
+    if (res.error) { failed = true; box.innerHTML += `<div class="msg err">${T.submitFailed(res.error)}</div>`; }
+    else {
+      const ok = res.filter(x=>x.ok); bad = res.filter(x=>!x.ok);
+      if (ok.length) box.innerHTML += `<div class="msg ok">${T.submitOk(ok.length)}</div>`;
+      bad.forEach(b => box.innerHTML += `<div class="msg err">✗ #${b.issue_id} ${b.date} ${b.hours}h — ${b.error}</div>`);
+      // Drop the successfully-created blocks from the working set; failed ones stay for retry.
+      ok.forEach(e => { blocks = blocks.filter(b => !(b.issue_id===e.issue_id && b.date===e.date && Math.abs((b.e-b.s)/60 - e.hours) < 0.001)); });
+    }
+  }
+
   btn.disabled = false; btn.textContent = T.submit;
+  // Clean run → reload so everything reflects the server (blue edits become grey again, new blocks get ids).
+  if (!failed && !bad.length) { await load(); return; }
+  render();
 }
 
 applyStatic();

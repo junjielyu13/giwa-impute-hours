@@ -122,6 +122,43 @@ def api_post(url, key, path, payload):
         raise RuntimeError(f"HTTP {e.code}: {detail[:200]}")
 
 
+def api_put(url, key, path, payload):
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url + path, data=data, method="PUT",
+        headers={"X-Redmine-API-Key": key, "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode("utf-8")
+            return json.loads(body) if body.strip() else {}
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8")
+        except Exception:
+            pass
+        raise RuntimeError(f"HTTP {e.code}: {detail[:200]}")
+
+
+def api_delete(url, key, path):
+    req = urllib.request.Request(
+        url + path, method="DELETE",
+        headers={"X-Redmine-API-Key": key},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp.read()
+            return {}
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8")
+        except Exception:
+            pass
+        raise RuntimeError(f"HTTP {e.code}: {detail[:200]}")
+
+
 def open_in_code(path, hint=""):
     import shutil, subprocess
     if shutil.which("code"):
@@ -295,7 +332,8 @@ def cmd_timesheet(url, key, rest=None):
     gurl, gtok = gitlab_cfg()
     try:
         timesheet_web.serve(url, key, api_get, api_post, port, extra_ids=extra_task_ids(),
-                            gitlab_url=gurl, gitlab_token=gtok, gitlab_get=gitlab_get)
+                            gitlab_url=gurl, gitlab_token=gtok, gitlab_get=gitlab_get,
+                            api_put=api_put, api_delete=api_delete)
     except RuntimeError as e:
         die(str(e))
 

@@ -71,8 +71,8 @@ MOCK_INIT = {
         },
     },
     "existing": [
-        {"issue_id": 102, "date": DAYS[0], "hours": 2.5, "subject": "Implement dark mode", "projcode": "Mobile App"},
-        {"issue_id": 104, "date": DAYS[1], "hours": 4, "subject": "Landing page redesign", "projcode": "Website"},
+        {"id": 9001, "issue_id": 102, "date": DAYS[0], "hours": 2.5, "subject": "Implement dark mode", "projcode": "Mobile App", "comment": "morning"},
+        {"id": 9002, "issue_id": 104, "date": DAYS[1], "hours": 4, "subject": "Landing page redesign", "projcode": "Website", "comment": ""},
     ],
 }
 MOCK_ISSUE = {"id": 27509, "subject": "Manually entered task", "tracker": "Task",
@@ -87,6 +87,9 @@ def _install_routes(page):
                lambda r: r.fulfill(content_type="application/json", body=json.dumps(MOCK_ISSUE)))
     page.route(re.compile(r".*/api/(ping|close|submit).*"),
                lambda r: r.fulfill(status=200, content_type="application/json", body="{}"))
+    # Edit (POST) / delete (DELETE) of an already-logged entry both hit /api/entry
+    page.route(re.compile(r".*/api/entry.*"),
+               lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({"ok": True})))
 
 
 def _min_to_y(m):
@@ -102,11 +105,14 @@ def main():
         _install_routes(page)
         page.goto("https://demo.local/")
 
-        # 1) Calendar renders: 5 day columns + already-logged chips
+        # 1) Calendar renders: 5 day columns + already-logged hours as read-only blocks
         page.wait_for_selector(".dayhead")
         assert page.locator(".dayhead").count() == 5, "expected 5 weekday columns"
-        assert page.locator(".allday .chip").count() == 2, "expected 2 already-logged chips"
+        assert page.locator(".grid .block.locked").count() == 2, "expected 2 already-logged (locked) blocks"
         expect(page.locator("#title")).to_have_text("GIWA Time Calendar")
+
+        # Submit button is disabled until something new is added
+        expect(page.locator("#submitBtn")).to_be_disabled()
 
         # 2) GitLab panel shows clickable links into GitLab
         assert page.locator(".gp-item a.repo").count() >= 1, "repo link missing"
@@ -126,7 +132,10 @@ def main():
         page.select_option("#popupTask", "101")
         page.click("#popup .btn-primary")
         expect(page.locator("#popup")).to_be_hidden()
-        assert page.locator(".grid .block:not(.preview)").count() == 1, "created block not rendered"
+        assert page.locator(".grid .block:not(.preview):not(.locked)").count() == 1, "created block not rendered"
+
+        # ...and now that there's a new block, the submit button is enabled
+        expect(page.locator("#submitBtn")).to_be_enabled()
 
         # ---- screenshot for the README (English, with a freshly created block) ----
         # Un-stick the footer so the full-page capture doesn't overlap the stats rows.
@@ -134,7 +143,24 @@ def main():
         page.screenshot(path=str(out), full_page=True)
         print(f"screenshot written: {out.relative_to(ROOT)}")
 
-        # 4) Language switch works (do this after the screenshot so the image stays English)
+        # 4) A logged (grey) block can be resized to edit its hours → turns blue (modified), no confirm
+        blk = page.locator(".grid .block.locked").first
+        bb = blk.bounding_box()
+        page.mouse.move(bb["x"] + bb["width"] / 2, bb["y"] + bb["height"] - 3)  # grab the bottom resize edge
+        page.mouse.down()
+        page.mouse.move(bb["x"] + bb["width"] / 2, bb["y"] + bb["height"] - 3 + PXH, steps=6)  # +1h
+        page.mouse.up()
+        expect(page.locator(".grid .block.locked.modified")).to_have_count(1)
+        expect(page.locator("#submitBtn")).to_be_enabled()
+
+        # 5) The × on a logged block deletes it (with a confirm prompt) → DELETE /api/entry
+        dialogs = []
+        page.on("dialog", lambda d: (dialogs.append(d.message), d.accept()))
+        page.locator(".grid .block.locked .x").first.click()
+        page.wait_for_timeout(200)
+        assert dialogs, "delete should pop a confirm() dialog"
+
+        # 6) Language switch works (do this after the screenshot so the image stays English)
         page.select_option("#langSel", "zh")
         expect(page.locator("#title")).to_have_text("GIWA 工时日历")
         page.select_option("#langSel", "es")
